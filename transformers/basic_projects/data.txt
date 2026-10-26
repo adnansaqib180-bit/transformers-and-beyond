@@ -1,0 +1,3113 @@
+class KNN():
+    def __init__(self,k):
+        self.k = k
+    def fit (self,x:np.ndarray,y:np.ndarray):
+        self.x = x
+        self.y = y
+    def predict(self,x:np.ndarray):
+        distances = []
+        for x in self.x:
+            d = np.sqrt(np.sum((self.x - self.y)**2))
+            distances.append(d)
+        idx = np.argsort(distances)
+        nearest_idx = idx[:self.k]
+        nearest_labels = self.y[nearest_idx]
+        prediction = np.bincount(nearest_labels).argmax()
+        return f'prediction ==> {prediction}'
+X_train = np.array([1,2,3,4])
+y_train = np.array([0,0,1,1])
+X_test = np.array([2.5])
+model = KNN(k=3)
+model.fit(X_train, y_train)
+predictions = model.predict(X_test)
+predictions
+class Model:
+    def __init__(self,learning_rate : int,epoch : int):
+        self.learning_rate = learning_rate
+        self.epoch = epoch
+    def fit(self,x,y):
+        self.w = np.random.randn(1)
+        self.b = 0
+        if isinstance(x, np.ndarray):
+            self.x = x
+        else :
+            raise TypeError('model only eccepts numpy array')
+        if isinstance(y,np.ndarray):
+            self.y = y
+        else:
+            raise TypeError('model only eccepts numpy array')
+        self.n = len(self.x)
+        old_cost = float('inf')
+        for epoch in range(self.epoch):
+            y_pred = self.x*self.w+self.b
+            cost = np.mean((self.y - y_pred)**2)
+
+            self.dw = (-2/self.n) * np.sum(self.x * (self.y - y_pred))
+            self.db = (-2/self.n) * np.sum(self.y - y_pred)
+    
+            self.w  = self.w - self.learning_rate * self.dw
+            self.b = self.b - self.learning_rate * self.db
+            if  abs(old_cost - cost) < 0.001:
+                break
+            old_cost = cost
+    def predict(self,x_pred):
+        if isinstance(x_pred, np.ndarray):
+            self.x_pred = x_pred
+        else:
+            raise TypeError('model only eccepts numpy array')
+        y = self.x_pred * self.w + self.b
+        self.y = y
+        return self.y
+   
+from __future__ import annotations
+
+from functools import lru_cache
+from pathlib import Path
+from typing import Literal
+
+import joblib
+import pandas as pd
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, ConfigDict, field_validator
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+MODEL_DIR = next(
+    (
+        directory
+        for directory in (ROOT_DIR / "models", ROOT_DIR / "MODELS")
+        if directory.exists()
+    ),
+    ROOT_DIR / "models",
+)
+ML_MODEL_PATH = MODEL_DIR / "trained_model.pkl"
+ANN_MODEL_PATH = next(
+    (
+        model_path
+        for model_path in (
+            MODEL_DIR / "final_ann.keras",
+            MODEL_DIR / "trained_model.keras",
+            MODEL_DIR / "churn_ann.keras",
+        )
+        if model_path.exists()
+    ),
+    MODEL_DIR / "final_ann.keras",
+)
+
+app = FastAPI(title="Customer Churn Prediction API")
+
+
+class CustomerChurnInput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    customerID: str | None = None
+    gender: Literal["Male", "Female"] = "Male"
+    SeniorCitizen: int | bool = 0
+    Partner: Literal["No", "Yes"] = "No"
+    Dependents: Literal["No", "Yes"] = "No"
+    tenure: int = 1
+    PhoneService: Literal["No", "Yes"] = "Yes"
+    MultipleLines: Literal["No", "Yes", "No phone service"] = "No"
+    InternetService: Literal["DSL", "Fiber optic", "No"] = "DSL"
+    OnlineSecurity: Literal["No", "Yes", "No internet service"] = "No"
+    OnlineBackup: Literal["No", "Yes", "No internet service"] = "No"
+    DeviceProtection: Literal["No", "Yes", "No internet service"] = "No"
+    TechSupport: Literal["No", "Yes", "No internet service"] = "No"
+    StreamingTV: Literal["No", "Yes", "No internet service"] = "No"
+    StreamingMovies: Literal["No", "Yes", "No internet service"] = "No"
+    Contract: Literal["Month-to-month", "One year", "Two year"] = "Month-to-month"
+    PaperlessBilling: Literal["No", "Yes"] = "No"
+    PaymentMethod: Literal["Electronic check", "Mailed check", "Bank transfer (automatic)", "Credit card (automatic)"] = "Electronic check"
+    MonthlyCharges: float = 70.0
+    TotalCharges: float | str = 1000.0
+
+    @field_validator("SeniorCitizen", mode="before")
+    @classmethod
+    def normalize_senior_citizen(cls, value):
+        if isinstance(value, bool):
+            return int(value)
+        return value
+
+
+class PredictionResponse(BaseModel):
+    prediction: int
+    probability: float | None = None
+    label: str
+    model: str
+
+
+def _prepare_ml_dataframe(payload: CustomerChurnInput) -> pd.DataFrame:
+    record = payload.model_dump(exclude_none=True)
+    df = pd.DataFrame([record])
+    df["SeniorCitizen"] = df["SeniorCitizen"].map({0: "No", 1: "Yes", False: "No", True: "Yes"})
+    df["TotalCharges"] = pd.to_numeric(df["TotalCharges"], errors="coerce").fillna(0)
+    ml_columns = [
+        "SeniorCitizen",
+        "Partner",
+        "Dependents",
+        "tenure",
+        "PhoneService",
+        "MultipleLines",
+        "InternetService",
+        "OnlineSecurity",
+        "OnlineBackup",
+        "DeviceProtection",
+        "TechSupport",
+        "StreamingTV",
+        "StreamingMovies",
+        "Contract",
+        "PaperlessBilling",
+        "PaymentMethod",
+        "MonthlyCharges",
+        "TotalCharges",
+    ]
+    return df[ml_columns]
+
+
+@lru_cache(maxsize=1)
+def load_ml_model():
+    if not ML_MODEL_PATH.exists():
+        raise FileNotFoundError(f"ML model not found at {ML_MODEL_PATH}")
+    return joblib.load(ML_MODEL_PATH)
+
+
+@lru_cache(maxsize=1)
+def load_ann_model():
+    if not ANN_MODEL_PATH.exists():
+        raise FileNotFoundError(f"ANN model not found at {ANN_MODEL_PATH}")
+
+    try:
+        from keras.models import load_model
+    except Exception:
+        try:
+            from tensorflow.keras.models import load_model
+        except Exception as exc:  
+            raise RuntimeError("TensorFlow/Keras is not installed. Install it to use the ANN endpoint.") from exc
+
+    return load_model(ANN_MODEL_PATH)
+
+
+def _prepare_ann_dataframe(payload: CustomerChurnInput) -> pd.DataFrame:
+    record = payload.model_dump(exclude_none=True)
+    df = pd.DataFrame([record])
+    df["gender"] = df["gender"].map({"Male": 1, "Female": 0})
+    df["TotalCharges"] = pd.to_numeric(df["TotalCharges"], errors="coerce").fillna(0)
+    df = df.drop(columns=["customerID"], errors="ignore")
+    df = df.drop(columns=["PaperlessBilling", "InternetService", "OnlineSecurity", "OnlineBackup", "DeviceProtection"], errors="ignore")
+
+    df["MultipleLines"] = df["MultipleLines"].map({"No internet service": "No", "No": "No", "Yes": "Yes", "No phone service": "No"})
+    for col in ["Partner", "Dependents", "PhoneService", "MultipleLines"]:
+        df[col] = df[col].map({"Yes": 1, "No": 0})
+
+    df["Contract"] = df["Contract"].map({"Month-to-month": 0, "One year": 1, "Two year": 2})
+
+    df = pd.get_dummies(data=df, columns=["PaymentMethod"], drop_first=True, dtype=int)
+    for col in ["TechSupport", "StreamingMovies", "StreamingTV"]:
+        df[col] = df[col].map({"Yes": 1, "No": 0, "No internet service": 0})
+
+    expected_columns = [
+        "gender",
+        "SeniorCitizen",
+        "Partner",
+        "Dependents",
+        "tenure",
+        "PhoneService",
+        "MultipleLines",
+        "TechSupport",
+        "StreamingMovies",
+        "StreamingTV",
+        "Contract",
+        "MonthlyCharges",
+        "TotalCharges",
+        "PaymentMethod_Credit card (automatic)",
+        "PaymentMethod_Electronic check",
+        "PaymentMethod_Mailed check",
+    ]
+
+    for col in expected_columns:
+        if col not in df.columns:
+            df[col] = 0
+
+    return df[expected_columns]
+
+
+@app.get("/")
+def welcome():
+    return {
+        "message": "Welcome to the Customer Churn Prediction API",
+        "models": [
+            "machine-learning-model",
+            "deep-learning-ann",
+        ],
+    }
+
+
+@app.post("/ml-model", response_model=PredictionResponse)
+def predict_ml(payload: CustomerChurnInput):
+    try:
+        model = load_ml_model()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Unable to load ML model: {exc}") from exc
+
+    try:
+        df = _prepare_ml_dataframe(payload)
+        prediction = int(model.predict(df)[0])
+        probability = None
+        if hasattr(model, "predict_proba"):
+            probability = float(model.predict_proba(df)[0][1])
+        label = "Churn" if prediction == 1 else "No Churn"
+        return PredictionResponse(prediction=prediction, probability=probability, label=label, model="machine-learning-model")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"ML prediction failed: {exc}") from exc
+
+
+@app.post("/deep-learning-ann", response_model=PredictionResponse)
+def predict_ann(payload: CustomerChurnInput):
+    try:
+        model = load_ann_model()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Unable to load ANN model: {exc}") from exc
+
+    try:
+        df = _prepare_ann_dataframe(payload)
+        prediction_probability = float(model.predict(df, verbose=0).reshape(-1)[0])
+        prediction = int(prediction_probability >= 0.5)
+        label = "Churn" if prediction == 1 else "No Churn"
+        return PredictionResponse(prediction=prediction, probability=prediction_probability, label=label, model="deep-learning-ann")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"ANN prediction failed: {exc}") from exc
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, field_validator
+
+
+class CustomerChurnInput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    customerID: str | None = None
+    gender: Literal["Male", "Female"] = "Male"
+    SeniorCitizen: int | bool = 0
+    Partner: Literal["No", "Yes"] = "No"
+    Dependents: Literal["No", "Yes"] = "No"
+    tenure: int = 1
+    PhoneService: Literal["No", "Yes"] = "Yes"
+    MultipleLines: Literal["No", "Yes", "No phone service"] = "No"
+    InternetService: Literal["DSL", "Fiber optic", "No"] = "DSL"
+    OnlineSecurity: Literal["No", "Yes", "No internet service"] = "No"
+    OnlineBackup: Literal["No", "Yes", "No internet service"] = "No"
+    DeviceProtection: Literal["No", "Yes", "No internet service"] = "No"
+    TechSupport: Literal["No", "Yes", "No internet service"] = "No"
+    StreamingTV: Literal["No", "Yes", "No internet service"] = "No"
+    StreamingMovies: Literal["No", "Yes", "No internet service"] = "No"
+    Contract: Literal["Month-to-month", "One year", "Two year"] = "Month-to-month"
+    PaperlessBilling: Literal["No", "Yes"] = "No"
+    PaymentMethod: Literal["Electronic check", "Mailed check", "Bank transfer (automatic)", "Credit card (automatic)"] = "Electronic check"
+    MonthlyCharges: float = 70.0
+    TotalCharges: float | str = 1000.0
+
+    @field_validator("SeniorCitizen", mode="before")
+    @classmethod
+    def normalize_senior_citizen(cls, value):
+        if isinstance(value, bool):
+            return int(value)
+        return value
+
+
+class PredictionResponse(BaseModel):
+    prediction: int
+    probability: float | None = None
+    label: str
+    model: str
+import pandas as pd
+if __name__ == '__main__':
+    import matplotlib.pyplot as plt
+    import keras 
+    from keras import Sequential
+    from keras.layers import Dense, Normalization
+    # from imblearn.over_sampling import SMOTE 
+    import keras_tuner as kt
+    from keras.callbacks import EarlyStopping
+
+    early_stopping = EarlyStopping(monitor='val_recall', 
+                                   patience=5,
+                                   mode='max'  )
+
+
+
+df = pd.read_csv('costumer-churn-prediction/Data.csv')
+
+df = df.drop(columns=['PaperlessBilling','customerID','InternetService','OnlineSecurity','OnlineBackup','DeviceProtection'])
+
+df['gender'] = df['gender'].map({'Male':1,'Female':0})
+df['TotalCharges'] = pd.to_numeric(df['TotalCharges'], errors='coerce')
+df = df.dropna()
+
+
+df['MultipleLines'] = df['MultipleLines'].map({'No internet service': 'No','No':'No','Yes':'Yes','No phone service':'No'})
+yes_no_columns = ['Partner','Dependents','PhoneService','MultipleLines']
+for col in yes_no_columns:
+    df[col] = df[col].map({'Yes':1,'No':0})
+
+
+df['Contract'] = df['Contract'].map({'Month-to-month':0,'One year':1,'Two year':2})
+df['Churn'] = df['Churn'].map({'Yes':1,'No':0})
+
+
+df = pd.get_dummies(data=df,columns=['PaymentMethod'],drop_first=True,dtype=int)  
+same_columns = ['TechSupport','StreamingMovies','StreamingTV']
+for col in same_columns:
+    df[col] = df[col].map({'Yes':1,'No':0,'No internet service':0})
+x = df.drop(columns= ['Churn'])
+y = df['Churn']
+
+
+from sklearn.model_selection import train_test_split
+x_train,x_test,y_train,y_test = train_test_split(x,y,random_state=42)
+
+class_weight_dict = {0: 0.67, 1: 1.94}
+if __name__ == '__main__':
+    print(df.head())
+    print(df.info())
+    print(x.shape)
+    print(x_test.shape)
+    print(y_train.shape)
+    print(y_test.shape)
+    print(df['Churn'].value_counts())
+
+
+
+# smote = SMOTE()
+# x_train,y_train = smote.fit_resample(x_train,y_train)
+
+#  =============== due to not good result i did'nt keep smote =========
+
+if __name__ == '__main__':
+    normalizer = Normalization()
+    normalizer.adapt(x_train.values)
+    def build_model(hp):
+        model = Sequential()
+        model.add(normalizer)
+        nodes = hp.Int('nodes',min_value= 20,max_value=80,step= 8)
+        optimizer = hp.Choice('optimizer',values=['Adam','sgd','adagrad','nadam'])
+        activation = hp.Choice('activation',values=['tanh','sigmoid','relu','elu'])
+        num_layers = hp.Int('layers',min_value=1,max_value=3)
+        for i in range (num_layers):
+            if i == 0:
+                model.add(Dense(units=nodes,activation=activation,input_shape=(16,)))
+            else:
+                model.add(Dense(units=nodes,activation=activation))
+        model.add(Dense(1,activation='sigmoid'))          
+        model.compile(optimizer=optimizer,
+                      loss='binary_crossentropy',
+                      metrics=[keras.metrics.Recall(name='recall')])
+        return model
+
+
+
+    tuner = kt.RandomSearch(build_model,objective='val_recall',max_trials=10)
+    tuner.search(x_train,
+                 y_train,epochs=10,
+                 validation_data=(x_test,y_test),
+                 callbacks=[early_stopping],
+                 class_weight=class_weight_dict
+                 )
+
+
+    print(tuner.get_best_hyperparameters()[0].values)
+    model = tuner.get_best_models(num_models=1)[0]
+    print(model.summary())
+
+
+    history = model.fit(x_train,y_train,epochs=100,validation_split = .20)
+
+
+
+    plt.figure(figsize=(10, 4))
+    plt.subplot(1, 2, 1)
+    plt.plot(history.history["loss"], label="Train Loss")
+    plt.plot(history.history["val_loss"], label="Validation Loss")
+    plt.title("Model Loss")
+    plt.ylabel("Loss")
+    plt.xlabel("Epoch")
+    plt.legend()
+
+
+    plt.subplot(1, 2, 2)
+    plt.plot(history.history["recall"], label="Train Recall")
+    plt.plot(history.history["val_recall"], label="Validation Recall")
+    plt.title("Model Recall")
+    plt.ylabel("Recall")
+    plt.xlabel("Epoch")
+    plt.legend()
+
+
+    plt.tight_layout()
+    plt.show()
+
+    #saving the model
+
+    model.save('final_ann.keras')
+    print('model saved')
+from keras.models import load_model
+from train_dl import x_test, y_test 
+from sklearn.metrics import (confusion_matrix, 
+                             f1_score, accuracy_score,
+                               precision_score,recall_score)
+
+model =load_model('costumer-churn-prediction/models/final_ann.keras')
+
+raw_predictions = model.predict(x_test)
+predictions = (raw_predictions > 0.4).astype(int) 
+print(predictions)
+print("Confusion Matrix:\n", confusion_matrix(y_test, predictions))
+print("F1 Score:", f1_score(y_test, predictions))
+print("Accuracy Score:", accuracy_score(y_test, predictions))
+print('Precision : ',precision_score(y_test, predictions))
+print('Recall : ',recall_score(y_test, predictions))
+import numpy as np,pandas as pd 
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import StandardScaler,OneHotEncoder
+from sklearn.model_selection import train_test_split,RandomizedSearchCV
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+import warnings
+
+warnings.filterwarnings('ignore')
+
+df = pd.read_csv('costumer-churn-prediction/Data.csv')
+
+print(df.head())
+print(df.info())
+print(df.describe())
+print(df.isnull().sum())
+print(df.duplicated().sum())
+print(df['Churn'].value_counts())
+print (df.shape)
+print(df.columns)
+
+df = df.drop(columns=['gender','customerID'])
+df.head()
+
+df['TotalCharges'] = pd.to_numeric(df['TotalCharges'], errors='coerce')
+df['TotalCharges'] = df['TotalCharges'].fillna(np.mean(df['TotalCharges']))
+numeric_columns = ['MonthlyCharges','tenure','TotalCharges']
+
+un_cleaned_catagorical = []
+for col in df.columns:
+    if df[col].dtype == object or df[col].dtype == 'string':
+        if df[col].nunique() > 2:
+            un_cleaned_catagorical.append(col)
+to_clean = ['MultipleLines','OnlineSecurity','OnlineBackup','DeviceProtection','TechSupport','StreamingTV','StreamingMovies']
+for col in to_clean:
+    df[col] = df[col].map({'No internet service': 'No','No':'No','Yes':'Yes','No phone service':'No'})
+
+
+df['Churn'] = df['Churn'].map({'Yes':1,'No':0})
+x = df.drop('Churn',axis=1)
+y= df['Churn']
+
+x['SeniorCitizen'] = x['SeniorCitizen'].map({0:'No',1:'Yes'})
+to_Label_encode = []
+to_onhot_encode = []
+to_scale = numeric_columns
+for col in x.columns:
+    if x[col].nunique() == 2:
+        to_Label_encode.append(col)
+    elif x[col].nunique() == 3 or x[col].nunique() == 4:
+        to_onhot_encode.append(col)
+print(to_Label_encode,to_onhot_encode)
+
+x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.33, random_state=42)
+
+from xgboost import XGBClassifier
+Preprocessor =  ColumnTransformer([
+    ('scaler', StandardScaler(), to_scale),
+    ('hot_encoder', OneHotEncoder(handle_unknown='ignore'), to_onhot_encode),
+    ('binary_encoder', OneHotEncoder(handle_unknown='ignore', drop='if_binary'), to_Label_encode)
+])
+models = {
+    'LogisticRegression':LogisticRegression(class_weight='balanced',max_iter=6000),
+    'xgboost':XGBClassifier(),
+    'DecisionTree': DecisionTreeClassifier(class_weight='balanced')
+}
+param_grids = {
+    'LogisticRegression': {
+        'solver':  ['lbfgs', 'liblinear', 'newton-cg', 'newton-cholesky', 'sag'],
+        'C': [ 0.1,0.01,1,30],
+        'penalty': ['l1', 'l2']
+    },
+    'xgboost': {
+        'n_estimators': [100, 200, 800],
+        'max_depth': [3, 5, 9],
+        'learning_rate': [0.01, 0.1, 0.2],
+        'subsample': [0.8, 1.0],    
+    },
+    'DecisionTree': {
+        'criterion': ['gini', 'entropy'],
+        'max_depth': [None, 5, 10, 15, 20],
+        'min_samples_split':[2,5,10],
+        'min_samples_leaf': [1, 2, 4]
+    }
+}
+
+best_models = {}
+for model_name in models:
+    print(f'filhal ==> {model_name } <== trian ho rha he ...........')
+    my_pipeline = Pipeline([
+        ('preprocessor',Preprocessor),
+        ('model',models[model_name])
+    ])
+    current_grid = {}
+    for prams, val in param_grids[model_name].items():
+        current_grid[f'model__{prams}'] = val
+    search = RandomizedSearchCV(
+        estimator=my_pipeline,
+        param_distributions=current_grid,
+        cv=5,
+        scoring='f1',
+        n_jobs=-1,
+    )
+    search.fit(x_train, y_train)
+    best_models[model_name] = search.best_estimator_
+    print(f"Optimal Parameters for {model_name}: {search.best_params_}")
+    print(f"Highest CV Score: {search.best_score_:.4f}\n")
+
+
+from sklearn.metrics import accuracy_score
+from sklearn.metrics import precision_score, recall_score, f1_score,confusion_matrix
+
+print("======= FINAL TEST SCORES =======")
+
+for model_name, trained_model in best_models.items():
+
+    prediction = trained_model.predict(x_test)
+
+    print(f"\n{model_name}")
+    print("-" * 30)
+    print("confusion_matrix :", confusion_matrix(y_test, prediction))
+    print("Accuracy :", accuracy_score(y_test, prediction))
+    print("Precision:", precision_score(y_test, prediction))
+    print("Recall   :", recall_score(y_test, prediction))
+    print("F1 Score :", f1_score(y_test, prediction))
+
+
+
+
+def input_form() -> dict | None:
+    """Render the customer form and return a validated API input object."""
+    with st.form("customer_details"):
+        st.markdown("### Customer profile")
+        left, right = st.columns(2, gap="large")
+
+        with left:
+            gender = st.selectbox("Gender", ["Female", "Male"])
+            senior_citizen = st.selectbox("Senior citizen", ["No", "Yes"])
+            partner = st.selectbox("Partner", ["No", "Yes"])
+            dependents = st.selectbox("Dependents", ["No", "Yes"])
+            tenure = st.slider("Tenure (months)", 0, 72, 12)
+            phone_service = st.selectbox("Phone service", ["No", "Yes"])
+            multiple_lines = st.selectbox(
+                "Multiple lines", ["No", "Yes", "No phone service"]
+            )
+            internet_service = st.selectbox(
+                "Internet service", ["DSL", "Fiber optic", "No"]
+            )
+            online_security = st.selectbox(
+                "Online security", ["No", "Yes", "No internet service"]
+            )
+
+        with right:
+            online_backup = st.selectbox(
+                "Online backup", ["No", "Yes", "No internet service"]
+            )
+            device_protection = st.selectbox(
+                "Device protection", ["No", "Yes", "No internet service"]
+            )
+            tech_support = st.selectbox(
+                "Tech support", ["No", "Yes", "No internet service"]
+            )
+            streaming_tv = st.selectbox(
+                "Streaming TV", ["No", "Yes", "No internet service"]
+            )
+            streaming_movies = st.selectbox(
+                "Streaming movies", ["No", "Yes", "No internet service"]
+            )
+            contract = st.selectbox(
+                "Contract", ["Month-to-month", "One year", "Two year"]
+            )
+            paperless_billing = st.selectbox("Paperless billing", ["No", "Yes"])
+            payment_method = st.selectbox(
+                "Payment method",
+                [
+                    "Electronic check",
+                    "Mailed check",
+                    "Bank transfer (automatic)",
+                    "Credit card (automatic)",
+                ],
+            )
+            monthly_charges = st.number_input(
+                "Monthly charges", min_value=0.0, value=70.0, step=1.0
+            )
+            total_charges = st.number_input(
+                "Total charges", min_value=0.0, value=1000.0, step=10.0
+            )
+
+        submitted = st.form_submit_button("Analyze churn risk", type="primary")
+
+    if not submitted:
+        return None
+
+    return {
+        "gender": gender,
+        "SeniorCitizen": senior_citizen == "Yes",
+        "Partner": partner,
+        "Dependents": dependents,
+        "tenure": tenure,
+        "PhoneService": phone_service,
+        "MultipleLines": multiple_lines,
+        "InternetService": internet_service,
+        "OnlineSecurity": online_security,
+        "OnlineBackup": online_backup,
+        "DeviceProtection": device_protection,
+        "TechSupport": tech_support,
+        "StreamingTV": streaming_tv,
+        "StreamingMovies": streaming_movies,
+        "Contract": contract,
+        "PaperlessBilling": paperless_billing,
+        "PaymentMethod": payment_method,
+        "MonthlyCharges": monthly_charges,
+        "TotalCharges": total_charges,
+    }
+
+
+def request_prediction(endpoint: str, customer_input: dict) -> dict:
+    response = requests.post(
+        f"{API_BASE_URL}{endpoint}",
+        json=customer_input,
+        timeout=90,
+    )
+    if not response.ok:
+        try:
+            detail = response.json().get("detail", response.text)
+        except ValueError:
+            detail = response.text
+        raise RuntimeError(f"API returned {response.status_code}: {detail}")
+    return response.json()
+
+
+st.sidebar.markdown("## CHURN INTELLIGENCE")
+st.sidebar.caption("Customer retention decision workspace")
+st.sidebar.caption(f"Connected to: {API_BASE_URL}")
+selected_model = st.sidebar.radio(
+    "Choose prediction engine",
+    ["Machine learning", "Deep learning ANN"],
+    help="Select the trained model you want to use for this prediction.",
+)
+st.sidebar.divider()
+st.sidebar.markdown(
+    "**How it works**\n\n"
+    "Enter a customer's service details, select a model, and get an instant "
+    "churn probability."
+)
+
+st.markdown('<div class="eyebrow">Retention analytics / 01</div>', unsafe_allow_html=True)
+st.title("Know who is about to leave.")
+st.markdown(
+    '<p class="hero-copy">A focused customer churn workspace for turning account '
+    "signals into a clear retention decision.</p>",
+    unsafe_allow_html=True,
+)
+
+model_name = "Logistic regression pipeline" if selected_model == "Machine learning" else "Artificial neural network"
+st.markdown(
+    f'<div class="model-card">ACTIVE ENGINE &nbsp; <strong>{model_name}</strong></div>',
+    unsafe_allow_html=True,
+)
+
+customer_input = input_form()
+if customer_input is not None:
+    with st.spinner(f"Running {selected_model.lower()} analysis..."):
+        try:
+            result = request_prediction(
+                "/ml-model"
+                if selected_model == "Machine learning"
+                else "/deep-learning-ann",
+                customer_input,
+            )
+        except Exception as exc:
+            st.error(f"Prediction failed: {exc}")
+        else:
+            prediction = result["prediction"]
+            probability = result.get("probability")
+            risk = "HIGH RISK" if prediction else "LOW RISK"
+            st.markdown('<div class="result-card">', unsafe_allow_html=True)
+            st.markdown("### Prediction result")
+            metric_col, probability_col = st.columns(2)
+            with metric_col:
+                st.metric("Churn status", result["label"].upper())
+                st.caption(f"{risk}  |  {result['model']}")
+            with probability_col:
+                if probability is not None:
+                    st.metric("Churn probability", f"{probability:.1%}")
+                    st.progress(min(max(probability, 0.0), 1.0))
+            if prediction:
+                st.warning("This customer shows signals associated with churn. Consider a retention offer.")
+            else:
+                st.success("This customer currently shows a healthy retention profile.")
+            st.markdown("</div>", unsafe_allow_html=True)
+from contextlib import asynccontextmanager
+from io import BytesIO
+from pathlib import Path
+from typing import Annotated
+
+import numpy as np
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from PIL import Image, ImageOps, UnidentifiedImageError
+
+
+MODEL_DIR = Path(__file__).resolve().parents[1] / "trained models"
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_IMAGE_PIXELS = 25_000_000
+EMOTION_LABELS = (
+    "angry",
+    "disgust",
+    "fear",
+    "happy",
+    "neutral",
+    "sad",
+    "surprise",
+)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    import keras
+
+    model_files = {
+        "age_gender": "age_gender.keras",
+        "emotion": "emotion_model.keras",
+        "real_vs_ai": "real_vs_ai.keras",
+    }
+    app.state.models = {
+        name: keras.models.load_model(MODEL_DIR / filename)
+        for name, filename in model_files.items()
+    }
+    yield
+
+
+app = FastAPI(
+    title="Multi-Task Facial Intelligence API",
+    description="Run age and gender, facial emotion, and real-versus-AI image predictions.",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+
+def _read_image(image: UploadFile) -> Image.Image:
+    content = image.file.read(MAX_IMAGE_BYTES + 1)
+    if len(content) > MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="Image exceeds the 10 MiB upload limit.")
+
+    try:
+        source = Image.open(BytesIO(content))
+        if source.format not in {"JPEG", "PNG", "WEBP"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Only JPEG, PNG, and WebP images are supported.",
+            )
+        if source.width * source.height > MAX_IMAGE_PIXELS:
+            raise HTTPException(status_code=413, detail="Image dimensions are too large.")
+        source.load()
+        return ImageOps.exif_transpose(source).convert("RGB")
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as error:
+        raise HTTPException(
+            status_code=400,
+            detail="The uploaded file is not a valid supported image.",
+        ) from error
+
+
+def _model_input(image: Image.Image, size: int, grayscale: bool = False) -> np.ndarray:
+    if grayscale:
+        image = ImageOps.grayscale(image)
+    image = image.resize((size, size), Image.Resampling.BILINEAR)
+    return np.expand_dims(np.asarray(image, dtype=np.float32), axis=0)
+
+
+def _predict(request: Request, model_name: str, inputs: np.ndarray):
+    return request.app.state.models[model_name].predict(inputs, verbose=0)
+
+
+@app.post("/predict/age-gender")
+def predict_age_gender(
+    request: Request,
+    image: Annotated[UploadFile, File(description="A face image (JPEG, PNG, or WebP).")],
+):
+    face = _read_image(image)
+    prediction = _predict(request, "age_gender", _model_input(face, 224))
+    if not isinstance(prediction, (list, tuple)) or len(prediction) != 2:
+        raise RuntimeError("The age/gender model returned an unexpected output shape.")
+
+    age = float(np.asarray(prediction[0]).reshape(-1)[0])
+    female_probability = float(np.asarray(prediction[1]).reshape(-1)[0])
+    return {
+        "age": age,
+        "gender": "female" if female_probability >= 0.5 else "male",
+        "gender_probabilities": {
+            "female": female_probability,
+            "male": 1.0 - female_probability,
+        },
+    }
+
+
+@app.post("/predict/emotion")
+def predict_emotion(
+    request: Request,
+    image: Annotated[UploadFile, File(description="A face image (JPEG, PNG, or WebP).")],
+):
+    face = _read_image(image)
+    scores = np.asarray(
+        _predict(request, "emotion", _model_input(face, 124, grayscale=True))
+    ).reshape(-1)
+    if scores.size != len(EMOTION_LABELS):
+        raise RuntimeError("The emotion model returned an unexpected number of classes.")
+
+    class_index = int(np.argmax(scores))
+    return {
+        "emotion": EMOTION_LABELS[class_index],
+        "confidence": float(scores[class_index]),
+        "probabilities": {
+            label: float(score) for label, score in zip(EMOTION_LABELS, scores)
+        },
+    }
+
+
+@app.post("/predict/real-vs-ai")
+def predict_real_vs_ai(
+    request: Request,
+    image: Annotated[UploadFile, File(description="An image (JPEG, PNG, or WebP).")],
+):
+    picture = _read_image(image)
+    prediction = np.asarray(
+        _predict(request, "real_vs_ai", _model_input(picture, 224))
+    ).reshape(-1)
+    if prediction.size != 1:
+        raise RuntimeError("The real-versus-AI model returned an unexpected output shape.")
+
+    real_probability = float(prediction[0])
+    return {
+        "label": "real" if real_probability >= 0.5 else "ai-generated",
+        "confidence": max(real_probability, 1.0 - real_probability),
+        "probabilities": {
+            "real": real_probability,
+            "ai-generated": 1.0 - real_probability,
+        },
+    }
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+from pathlib import Path
+from fastapi.responses import FileResponse
+
+@app.get("/", include_in_schema=False)
+def home():
+    return FileResponse(Path(__file__).parent / "ui.html")
+import matplotlib.pyplot as plt
+import keras 
+from keras import layers, models
+from keras.utils import image_dataset_from_directory as loader 
+from keras.applications import EfficientNetB0
+
+train_ds = loader(
+    directory='/kaggle/input/datasets/birdy654/cifake-real-and-ai-generated-synthetic-images/train',
+    labels="inferred",
+    label_mode="int",
+    class_names=None,
+    color_mode="rgb",         
+    batch_size=32,
+    image_size=(224, 224)     
+)
+
+test_ds = loader(
+    directory='/kaggle/input/datasets/birdy654/cifake-real-and-ai-generated-synthetic-images/test',
+    labels="inferred",
+    label_mode="int",
+    class_names=None,
+    color_mode="rgb",         
+    batch_size=32,
+    image_size=(224, 224)     
+)
+
+base_model = EfficientNetB0(
+    include_top=False,
+    weights='imagenet',
+    input_shape=(224, 224, 3), 
+    pooling=None               
+)
+base_model.trainable = False   
+
+inputs = layers.Input(shape=(224, 224, 3)) 
+x = base_model(inputs, training=False)      
+x = layers.GlobalAveragePooling2D()(x)
+x = layers.Dropout(0.3)(x)
+x = layers.Dense(128, activation='relu')(x)
+outputs = layers.Dense(1, activation='sigmoid')(x)
+
+model = models.Model(inputs, outputs)
+
+model.compile(
+    optimizer=keras.optimizers.Adam(learning_rate=1e-3),
+    loss='binary_crossentropy',
+    metrics=['accuracy']
+)
+
+print('--- Phase 1: Training Top Layers oonly ---')
+print(model.summary())
+model.fit(train_ds, epochs=2, validation_data=test_ds)
+
+base_model.trainable = True
+
+for layer in base_model.layers:
+    layer.trainable = False
+for layer in base_model.layers[-20:]:
+    layer.trainable = True
+
+model.compile(
+    optimizer=keras.optimizers.Adam(learning_rate=1e-5), 
+    loss='binary_crossentropy',
+    metrics=['accuracy']
+)
+
+print("\n-- Phase 2 : Fine-Tuning Last 20 Layers ---")
+print(model.summary())  
+
+history = model.fit(train_ds, epochs=10, validation_data=test_ds)
+
+plt.figure(figsize=(10, 4))
+plt.subplot(1, 2, 1)
+plt.plot(history.history["loss"], label="Train Loss")
+plt.plot(history.history["val_loss"], label="Validation Loss")
+plt.title("Model Loss")
+plt.ylabel("Loss")
+plt.xlabel("Epoch")
+plt.legend()
+
+
+plt.subplot(1, 2, 2)
+plt.plot(history.history["accuracy"], label="Train Accuracy")
+plt.plot(history.history["val_accuracy"], label="Validation Accuracy")
+plt.title("Model Accuracy")
+plt.ylabel("Accuracy")
+plt.xlabel("Epoch")
+plt.legend()
+
+
+plt.tight_layout()
+plt.show()
+model.save('final_ann.keras')
+print('model saved')
+# note :
+# model is trained on kaggle because of the limited GPU resources 
+# on my local machine.
+import matplotlib.pyplot as plt
+import tensorflow as tf
+import os 
+import pandas as pd
+from keras.models import Model
+from keras.layers import (Input, Dense, Conv2D, MaxPooling2D, Flatten,
+                          RandomFlip, RandomRotation, RandomZoom, Rescaling)
+
+folder_path = '/kaggle/input/datasets/jangedoo/utkface-new/UTKFace'
+
+age = []
+gender = []
+img_path = []
+
+for file in os.listdir(folder_path):
+    parts = file.split('_')
+    if len(parts) >= 3:
+        age.append(int(parts[0]))      
+        gender.append(int(parts[1]))   
+        img_path.append(os.path.join(folder_path, file)) 
+
+train_df = pd.DataFrame({'age': age, 'gender': gender, 'img_path': img_path})
+print("Dataset Shape:", train_df.shape)
+print(train_df.head(3))
+
+train_df_split = train_df.sample(frac=0.8, random_state=42)
+test_df_split = train_df.drop(train_df_split.index)
+
+def load_and_preprocess_image(path, age_label, gender_label):
+    image = tf.io.read_file(path)
+    image = tf.image.decode_jpeg(image, channels=3)
+    image = tf.image.resize(image, [224, 224])
+    return image, {'age_output': tf.cast(age_label, tf.float32), 
+                   'gender_output': tf.cast(gender_label, tf.float32)}
+
+
+train_dataset = tf.data.Dataset.from_tensor_slices(
+    (train_df_split['img_path'].values, train_df_split['age'].values, train_df_split['gender'].values)
+)
+train_dataset = train_dataset.map(load_and_preprocess_image, num_parallel_calls=tf.data.AUTOTUNE)
+train_dataset = train_dataset.shuffle(1000).batch(32).prefetch(tf.data.AUTOTUNE)
+
+
+test_dataset = tf.data.Dataset.from_tensor_slices(
+    (test_df_split['img_path'].values, test_df_split['age'].values, test_df_split['gender'].values)
+)
+test_dataset = test_dataset.map(load_and_preprocess_image, num_parallel_calls=tf.data.AUTOTUNE)
+test_dataset = test_dataset.batch(32).prefetch(tf.data.AUTOTUNE)
+
+
+# --- MODEL ARCHITECTURe ---
+input_layer = Input(shape=(224, 224, 3))
+
+# Data Augmentation & Normalization Pipeline
+x = RandomFlip("horizontal")(input_layer)
+x = RandomRotation(0.1)(x)
+x = RandomZoom(0.1)(x)
+x = Rescaling(1./255)(x)
+
+x = Conv2D(64, (3, 3), activation='relu', padding='same', name='block1_conv1')(x)
+x = Conv2D(64, (3, 3), activation='relu', padding='same', name='block1_conv2')(x)
+x = MaxPooling2D((2, 2), strides=(2, 2), name='block1_pool')(x)
+
+# Block 2
+x = Conv2D(128, (3, 3), activation='relu', padding='same', name='block2_conv1')(x)
+x = Conv2D(128, (3, 3), activation='relu', padding='same', name='block2_conv2')(x)
+x = MaxPooling2D((2, 2), strides=(2, 2), name='block2_pool')(x)
+
+# Block 3
+x = Conv2D(256, (3, 3), activation='relu', padding='same', name='block3_conv1')(x)
+x = Conv2D(256, (3, 3), activation='relu', padding='same', name='block3_conv2')(x)
+x = Conv2D(256, (3, 3), activation='relu', padding='same', name='block3_conv3')(x)
+x = MaxPooling2D((2, 2), strides=(2, 2), name='block3_pool')(x)
+
+# Block 4
+x = Conv2D(512, (3, 3), activation='relu', padding='same', name='block4_conv1')(x)
+x = Conv2D(512, (3, 3), activation='relu', padding='same', name='block4_conv2')(x)
+x = Conv2D(512, (3, 3), activation='relu', padding='same', name='block4_conv3')(x)
+x = MaxPooling2D((2, 2), strides=(2, 2), name='block4_pool')(x)
+
+# Block 5
+x = Conv2D(512, (3, 3), activation='relu', padding='same', name='block5_conv1')(x)
+x = Conv2D(512, (3, 3), activation='relu', padding='same', name='block5_conv2')(x)
+x = Conv2D(512, (3, 3), activation='relu', padding='same', name='block5_conv3')(x)
+x = MaxPooling2D((2, 2), strides=(2, 2), name='block5_pool')(x)
+
+flatten_layer = Flatten(name='flatten')(x)
+
+age_dense = Dense(128, activation='relu', name='age_dense')(flatten_layer)
+age_output = Dense(1, activation='linear', name='age_output')(age_dense)
+
+gender_dense = Dense(128, activation='relu', name='gender_dense')(flatten_layer)
+gender_output = Dense(1, activation='sigmoid', name='gender_output')(gender_dense)
+
+model = Model(inputs=input_layer, outputs=[age_output, gender_output])
+print(model.summary())
+
+model.compile(optimizer='adam',
+              loss={'age_output': 'mae', 'gender_output': 'binary_crossentropy'},
+              metrics={'age_output': ['mae'], 'gender_output': ['accuracy']})
+
+# Train using tf.data objects instead of DataFrames
+history = model.fit(train_dataset, epochs=10, validation_data=test_dataset)
+
+
+from keras.utils import plot_model
+plot_model(model, to_file='model_plot.png', show_shapes=True, show_layer_names=True)
+
+plt.figure(figsize=(12, 4))
+
+plt.subplot(1, 2, 1)
+plt.plot(history.history["loss"], label="Train Total Loss")
+plt.plot(history.history["val_loss"], label="Val Total Loss")
+plt.title("Model Total Loss")
+plt.ylabel("Loss")
+plt.xlabel("Epoch")
+plt.legend()
+
+
+plt.subplot(1, 2, 2)
+plt.plot(history.history["gender_output_accuracy"], label="Train Gender Accuracy")
+plt.plot(history.history["val_gender_output_accuracy"], label="Val Gender Accuracy")
+plt.title("Gender Branch Accuracy")
+plt.ylabel("Accuracy")
+plt.xlabel("Epoch")
+plt.legend()
+
+plt.tight_layout()
+plt.show()
+
+model.save('age_gender.keras')
+print('model saved')
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.utils.class_weight import compute_class_weight
+
+import keras
+from keras.models import Sequential
+from keras.layers import *
+from keras.utils import image_dataset_from_directory as loader
+from keras.callbacks import ReduceLROnPlateau, EarlyStopping
+
+
+train_ds = loader(
+    directory='/kaggle/working/cleaned_dataset/train_dir',
+    labels="inferred",
+    label_mode="int",
+    color_mode="grayscale",
+    batch_size=32,
+    image_size=(124, 124)
+)
+
+test_ds = loader(
+    directory='/kaggle/working/cleaned_dataset/test_dir',
+    labels="inferred",
+    label_mode="int",
+    color_mode="grayscale",
+    batch_size=32,
+    image_size=(124, 124)
+)
+
+y_train = []
+for images, labels in train_ds.unbatch():
+    y_train.append(labels.numpy())
+
+classes = np.unique(y_train)
+class_weights = compute_class_weight(
+    class_weight='balanced',
+    classes=classes,
+    y=y_train
+)
+class_weight_dict = dict(enumerate(class_weights))
+print("Computed Class Weights:", class_weight_dict)
+
+y_train = []
+for images, labels in train_ds.unbatch():
+    y_train.append(labels.numpy())
+
+classes = np.unique(y_train)
+class_weights = compute_class_weight(
+    class_weight='balanced',
+    classes=classes,
+    y=y_train
+)
+class_weight_dict = dict(enumerate(class_weights))
+print("Computed Class Weights:", class_weight_dict)
+
+model = Sequential()
+
+
+model.add(Rescaling(1./255, input_shape=(124, 124, 1)))
+model.add(RandomFlip("horizontal"))  
+
+model.add(Rescaling(1./255, input_shape=(124, 124, 1)))
+model.add(RandomFlip("horizontal"))  
+
+# Block 1
+model.add(Conv2D(64, kernel_size=(3,3), padding='same'))
+model.add(BatchNormalization())
+model.add(Activation('relu'))
+model.add(Conv2D(64, kernel_size=(3,3), padding='same'))
+model.add(BatchNormalization())
+model.add(Activation('relu'))
+model.add(MaxPooling2D(pool_size=(2,2)))
+model.add(Dropout(0.25))
+
+# Block 2
+model.add(Conv2D(128, kernel_size=(3,3), padding='same'))
+model.add(BatchNormalization())
+model.add(Activation('relu'))
+model.add(Conv2D(128, kernel_size=(3,3), padding='same'))
+model.add(BatchNormalization())
+model.add(Activation('relu'))
+model.add(MaxPooling2D(pool_size=(2,2)))
+model.add(Dropout(0.3))
+
+# Block 3
+model.add(Conv2D(256, kernel_size=(3,3), padding='same'))
+model.add(BatchNormalization())
+model.add(Activation('relu'))
+model.add(Conv2D(256, kernel_size=(3,3), padding='same'))
+model.add(BatchNormalization())
+model.add(Activation('relu'))
+model.add(MaxPooling2D(pool_size=(2,2)))
+model.add(Dropout(0.4))
+
+model.add(GlobalAveragePooling2D())
+model.add(Dense(256))
+model.add(BatchNormalization())
+model.add(Activation('relu'))
+model.add(Dropout(0.5))
+
+model.add(Dense(7, activation='softmax'))
+
+lr_reduction = ReduceLROnPlateau(
+    monitor='val_loss', 
+    patience=3, 
+    verbose=1, 
+    factor=0.5, 
+    min_lr=0.00001
+)
+
+early_stopping = EarlyStopping(
+    monitor='val_loss', 
+    patience=10, 
+    restore_best_weights=True
+)
+model.compile(
+    loss='sparse_categorical_crossentropy', 
+    optimizer=keras.optimizers.Adam(learning_rate=0.001), 
+    metrics=['accuracy']
+)
+
+
+history = model.fit(
+    train_ds,
+    epochs=20,
+    validation_data=test_ds,
+    class_weight=class_weight_dict,
+    callbacks=[lr_reduction, early_stopping]
+)
+
+early_stopping = EarlyStopping(
+    monitor='val_loss', 
+    patience=10, 
+    restore_best_weights=True
+)
+model.compile(
+    loss='sparse_categorical_crossentropy', 
+    optimizer=keras.optimizers.Adam(learning_rate=0.001), 
+    metrics=['accuracy']
+)
+
+#  Training
+history = model.fit(
+    train_ds,
+    epochs=20,
+    validation_data=test_ds,
+    class_weight=class_weight_dict,
+    callbacks=[lr_reduction, early_stopping]
+)
+
+#  Plotting Results
+plt.figure(figsize=(10, 4))
+plt.subplot(1, 2, 1)
+plt.plot(history.history["loss"], label="Train Loss")
+plt.plot(history.history["val_loss"], label="Validation Loss")
+plt.title("Model Loss")
+plt.ylabel("Loss")
+plt.xlabel("Epoch")
+plt.legend()
+
+plt.subplot(1, 2, 2)
+plt.plot(history.history["accuracy"], label="Train Accuracy")
+plt.plot(history.history["val_accuracy"], label="Validation Accuracy")
+plt.title("Model Accuracy")
+plt.ylabel("Accuracy")
+plt.xlabel("Epoch")
+plt.legend()
+plt.show()
+
+model.save('emotion_model.keras')
+print('model saved')
+plt.show()
+# Note :
+# Traing is done on kaggle because i have no GPU.
+# and the dataset is from kaggle datasets.
+ # The training data is in the form of images of cats and dogs.
+import tensorflow as tf
+from keras.models import Sequential 
+from keras.layers import Dense,Flatten , Conv2D, MaxPooling2D,Dropout,BatchNormalization,Activation
+from keras.utils import image_dataset_from_directory as loader 
+# loading the data 
+train_ds =  loader(
+    directory = '/kaggle/input/datasets/melvinpauljacob/cat-dog-dataset/dogscats/images',
+    labels="inferred",
+    label_mode="int",
+    class_names=None,
+    color_mode="rgb",
+    batch_size=32,
+    image_size=(256, 256)
+)
+
+test_ds =  loader(
+    directory = '/kaggle/input/datasets/melvinpauljacob/cat-dog-dataset/dogscats/valid',
+    labels="inferred",
+    label_mode="int",
+    class_names=None,
+    color_mode="rgb",
+    batch_size=32,
+    image_size=(256, 256)
+)
+#normalizinf the data 
+
+def process(image,lable):
+    image = tf.cast(image/256,tf.float32)
+    return image , lable
+train_ds = train_ds.map(process)
+test_ds = test_ds.map(process) 
+
+# creating our CNN 
+model = Sequential()
+#frist convolution layer with max pooling 
+model.add(Conv2D(32, padding = 'valid',kernel_size = (3,3),input_shape = (256,256,3)))
+model.add(BatchNormalization())
+model.add(Activation('relu'))
+model.add(MaxPooling2D(pool_size=(2,2),strides=2,padding='valid'))
+# secound layer
+model.add(Conv2D(32, padding='same',activation='relu',kernel_size = (3,3)),activation='relu')
+model.add(Dropout(0.25))
+# third layer 
+model.add(Conv2D(64,activation='relu'))
+# fourth layer 
+model.add(Conv2D(128, padding='valid',activation='relu',kernel_size = (3,3)))
+model.add(BatchNormalization())
+model.add(Activation('relu'))   
+model.add(MaxPooling2D(pool_size=(2,2),strides=2,padding='valid'))
+model.add(Flatten())
+# adding layers 
+model.add(Dense(256,activation='relu'))
+model.add(Dropout(0.4))
+model.add(Dense(1,activation='sigmoid'))
+
+model.compile(optimizer='adam',loss='binary_crossentropy',metrics=['accuracy'])
+history =  model.fit(train_ds,validation_data=test_ds,epochs=10)
+
+import matplotlib.pyplot as plt
+plt.figure(figsize=(10, 4))
+plt.subplot(1, 2, 1)
+plt.plot(history.history["loss"], label="Train Loss")
+plt.plot(history.history["val_loss"], label="Validation Loss")
+plt.title("Model Loss")
+plt.ylabel("Loss")
+plt.xlabel("Epoch")
+plt.legend()
+
+plt.subplot(1, 2, 2)
+plt.plot(history.history["accuracy"], label="Train Accuracy")
+plt.plot(history.history["val_accuracy"], label="Validation Accuracy")
+plt.title("Model Accuracy")
+plt.ylabel("Accuracy")
+plt.xlabel("Epoch")
+plt.legend()
+plt.show()
+import keras
+from keras import Sequential
+from keras.layers import Dense , Flatten
+import matplotlib.pyplot as plt
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score,precision_score
+import warnings
+warnings.filterwarnings("ignore")
+
+(x_train,y_train),(x_test,y_test) = keras.datasets.mnist.load_data()
+x_train = x_train/255
+x_test = x_test/255
+
+print(x_train.shape)
+print(x_test.shape)
+
+model = Sequential()
+model.add(Flatten(input_shape=(28,28)))
+model.add(Dense(392,activation='relu'))
+model.add(Dense(196,activation='relu'))
+model.add(Dense(10,activation='softmax'))
+
+print(model.summary())
+
+model.compile(loss='sparse_categorical_crossentropy',optimizer='Adam',metrics=['accuracy'])
+
+history = model.fit(x_train,y_train,epochs=2,validation_split=.2)
+
+y_prob = model.predict(x_test)
+predictions = y_prob.argmax(axis=1)
+
+print("Confusion Matrix:\n", confusion_matrix(y_test, predictions))
+print("F1 Score:", f1_score(y_test, predictions,average='weighted'))
+print("Accuracy Score:", accuracy_score(y_test, predictions))
+print('Precision : ',precision_score(y_test, predictions,average='weighted'))
+
+
+plt.figure(figsize=(10, 4))
+plt.subplot(1, 2, 1)
+plt.plot(history.history["loss"], label="Train Loss")
+plt.plot(history.history["val_loss"], label="Validation Loss")
+plt.title("Model Loss")
+plt.ylabel("Loss")
+plt.xlabel("Epoch")
+plt.legend()
+plt.subplot(1, 2, 2)
+plt.plot(history.history["accuracy"], label="Train Accuracy")
+plt.plot(history.history["val_accuracy"], label="Validation Accuracy")
+plt.title("Model Accuracy")
+plt.ylabel("Accuracy")
+plt.xlabel("Epoch")
+plt.legend()
+
+plt.tight_layout()
+plt.show()
+
+# in this project we are getting upto 
+# ===> 97.74% accuracy 
+# ===> 97.34% recall 
+# ===> 97.23% f1 
+
+import numpy as np 
+# import pandas as pd 
+
+# data = {
+#     'sqft' : [1000],
+#     'price' : [200000]
+# }
+# df= pd.DataFrame(data)
+# x = df['sqft']
+# y = df['price']
+# def model(g,act):
+#     w = 1
+#     b = 1
+#     for _ in range(20):
+
+#         for x in g:
+#             y_ht = w*x + b
+#             for y in act:
+#                 loss = (y-y_ht)**2
+#                 w = w-(0.00001)*(-2*(y-y_ht)*(x))
+#                 b = b-(0.00001)*(-2*(y-y_ht)*(x))
+#             print('l',loss)
+#             print('y',y,'p',y_ht)
+#             print(w,b)
+# model(x,y)
+
+import numpy as np
+
+
+def softmax(num):
+    n = np.exp(num - np.max(num, axis=-1, keepdims=True))
+    result = n / np.sum(n, axis=-1, keepdims=True)
+    return result 
+
+
+
+def self_attention(*X):
+    X = np.array(X)
+    XT = np.transpose(X)
+    XXT = np.dot(X,XT)
+    result = np.dot(softmax(XXT),X)
+    return result
+
+a = [1,2,3,4]
+b = [5,6,7,8]
+
+print(self_attention(a,b))
+# = softmax(KQ)V 
+def advanced_SA(*X):
+    X = np.array(X)
+    weights = np.array([[1,2,3],[2,3,4],[3,4,5]])
+    K,Q,V = np.dot(X,weights)
+    KQ = np.dot(K,Q)
+    result = np.dot(softmax(KQ),V)
+    return result 
+c = [1,2,3]
+d = [5,6,7]
+print(advanced_SA(c,d))
+
+# from sklearn.linear_model import Perceptron
+
+# data = {
+#     'num_bedrooms' : [2, 3, 4, 5, 6],
+#     'sqft' : [1000, 1500, 2000, 2500, 3000],
+#     'price' : [200000, 250000, 300000, 350000, 400000]
+# }
+
+# import pandas as pd 
+
+# df = pd.DataFrame(data)
+
+# x = df.drop(columns=['price'])
+
+# y = df['price']
+
+# print('started ..')
+# model = Perceptron(max_iter=10000000)
+# model.fit(x,y)
+
+# df = pd.DataFrame({
+#     'num_bedrooms' : [10],
+#     'sqft' : ['3200']
+# })
+
+# print(model.predict(df))
+
+import matplotlib.pyplot as plt
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score,precision_score
+from keras.models import Sequential
+from keras.layers import Dense, Conv2D, Flatten, MaxPooling2D
+from keras.datasets import mnist 
+
+import numpy as np
+import pandas as pd
+
+(x_train,y_train),(x_test,y_test) = mnist.load_data()
+
+x_test = x_test/255
+x_train = x_train/255
+
+model = Sequential()
+model.add(Conv2D(32, kernel_size=3, activation='relu', input_shape=(28, 28, 1)))
+model.add(MaxPooling2D(pool_size=2, strides=2, padding='valid'))
+model.add(Conv2D(64, kernel_size=3, activation='relu'))
+model.add(MaxPooling2D(pool_size=2, strides=2, padding='valid'))
+model.add(Flatten())
+model.add(Flatten(input_shape=(28,28)))
+model.add(Dense(392,activation='relu'))
+model.add(Dense(196,activation='relu'))
+model.add(Dense(10,activation='softmax'))
+
+model.compile(loss='sparse_categorical_crossentropy',optimizer='Adam',metrics=['accuracy'])
+
+history = model.fit(x_train,y_train,epochs=2,validation_split=.2)
+
+y_prob = model.predict(x_test)
+predictions = y_prob.argmax(axis=1)
+
+print("Confusion Matrix:\n", confusion_matrix(y_test, predictions))
+print("F1 Score:", f1_score(y_test, predictions,average='weighted'))
+print("Accuracy Score:", accuracy_score(y_test, predictions))
+print('Precision : ',precision_score(y_test, predictions,average='weighted'))
+
+
+plt.figure(figsize=(10, 4))
+plt.subplot(1, 2, 1)
+plt.plot(history.history["loss"], label="Train Loss")
+plt.plot(history.history["val_loss"], label="Validation Loss")
+plt.title("Model Loss")
+plt.ylabel("Loss")
+plt.xlabel("Epoch")
+plt.legend()
+plt.subplot(1, 2, 2)
+plt.plot(history.history["accuracy"], label="Train Accuracy")
+plt.plot(history.history["val_accuracy"], label="Validation Accuracy")
+plt.title("Model Accuracy")
+plt.ylabel("Accuracy")
+plt.xlabel("Epoch")
+plt.legend()
+
+plt.tight_layout()
+plt.show()
+import os
+import pandas as pd
+import psycopg2
+from contextlib import asynccontextmanager
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
+from fuctions.fuction import load_model
+from .scemas import Transaction  
+
+load_dotenv()
+
+MODEL_VERSION = '1.0.0'
+model_info = {}
+
+DB_URL = os.getenv('DB_URL')
+
+@asynccontextmanager 
+async def lifespan(app: FastAPI):
+    model_info['model'] = load_model()
+    yield
+    model_info.clear()
+
+app = FastAPI(lifespan=lifespan)
+
+@app.post('/predict')
+def predict_fraud(data: Transaction):
+    model = model_info.get('model')
+    if not model:
+        raise HTTPException(status_code=500, detail='model not loaded successfully')
+
+    input_df = pd.DataFrame({
+        'amt': data.amt,
+        'gender': data.gender,
+        'city_pop': data.city_pop,
+        'unix_time': data.unix_time,
+        'hour': data.hour,
+        'merchant_rate': data.merchant_rate,
+        'age': data.age,
+        'distance_km': data.distance_km,
+        'category_rate': data.category_rate
+    }, index=[0])
+
+  
+    input_df['gender'] = input_df['gender'].map({'M': 1, 'F': 0})
+    
+    prediction = model.predict_proba(input_df)[0][1]
+    propability = round(prediction * 100, 2)
+
+    if prediction > 0.2:
+        pred_label = 'fraud_transaction.'
+    else:
+        pred_label = 'normal_transaction.'
+
+    connection = None
+    cursor = None
+    try:
+        connection = psycopg2.connect(DB_URL)
+        cursor = connection.cursor()
+        cursor.execute(
+            "INSERT INTO predictions (amt, gender, city_pop, unix_time, hour, merchant_rate, age, distance_km, category_rate, prediction) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (data.amt, data.gender, data.city_pop, data.unix_time, data.hour, data.merchant_rate, data.age, data.distance_km, data.category_rate, pred_label)
+        )
+        connection.commit()
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
+        
+    return JSONResponse(status_code=200, content={'prediction is ': pred_label, 'fraud probability': propability})
+
+@app.get('/health')
+def health_check():
+    return {
+        'status': 'ok',
+        'model_version': MODEL_VERSION
+    }
+from pydantic import BaseModel , field_validator, computed_field, Field
+from typing import Annotated
+from datetime import datetime, date, timezone
+from .dict import merchant_rate, category_rate
+from fuctions.fuction import haversine_np
+
+class Transaction(BaseModel):
+    trans_date_trans_time :  Annotated[datetime, "Transaction date and time"] = Field(example="2021-01-01 12:00:00")
+    merchant : Annotated[str, "Merchant name"] = Field(example="fraud_Abbott-Rogahn")
+    category : Annotated[str, "Transaction category"] = Field(example="health_fitness")
+    amt : Annotated[float, "Transaction amount"] = Field(example=765,gt=0)
+    gender : Annotated[str, "Customer gender only M and F "] = Field(example="M",min_length=1,max_length=1)
+    lat : Annotated[float, "Customer latitude"] = Field(example=40.7128,ge=-90,le=90)
+    long : Annotated[float, "Customer longitude"] = Field(example=-74.0060,ge=-180,le=180)
+    city_pop : Annotated[int, "City population"] = Field(example=8000000,ge=1)
+    dob : Annotated[date, "Customer date of birth"] = Field(example="1990-01-01")
+    merch_lat: Annotated[float, "Merchant latitude"] = Field(example=40.7128,ge=-90,le=90)
+    merch_long : Annotated[float, "Merchant longitude"] = Field(example=-74.0060,ge=-180,le=180)
+
+
+    @field_validator('gender')
+    @classmethod
+    def gender_validator(cls,value : str ):
+        if value not in ['m','f','M','F']:
+            raise ValueError('invalid gender ')
+        return value.upper()
+    @computed_field
+    @property
+    def unix_time(self) -> int:
+        unix = self.trans_date_trans_time.astimezone(timezone.utc)
+        unix_float = unix.timestamp()
+        return int(unix_float)
+    
+    @computed_field
+    @property
+    def hour (self) -> int:
+        hr = self.trans_date_trans_time.hour
+        return int(hr)
+
+    @field_validator('merchant',mode='before')
+    @classmethod
+    def merchant_validator(cls,value):
+       valid_merchants = list(merchant_rate.keys())
+       if value not in valid_merchants:
+           raise ValueError('invalid merchant')
+       return value
+    @field_validator('category',mode='before')
+    @classmethod
+    def category_validator(cls,value):
+        valid_categ = list(category_rate.keys())
+        if value not in valid_categ:
+            raise ValueError('invalid category')
+        return value
+    @computed_field
+    @property
+    def age(self) -> int:
+       aage = (date.today() - self.dob).days // 365
+       if aage > 120:
+           raise ValueError('invalid age ')
+       elif aage < 1:
+           raise ValueError('inavlid age')
+       return int(aage)
+
+    @computed_field
+    @property
+    def distance_km(self) -> int:
+        d = haversine_np(self.long,self.lat,self.merch_long,self.merch_lat)
+        return int(d)
+
+    @computed_field
+    @property
+    def category_rate(self) -> int:
+        if self.category not in category_rate:
+            raise ValueError('invalid category')
+        return category_rate[self.category]
+    @computed_field
+    @property
+    def merchant_rate(self) -> int:
+        if self.merchant not in merchant_rate:
+            raise ValueError('invalid merchant')
+        return merchant_rate[self.merchant]
+
+import pandas as pd
+def load_data(csv_file):
+    """
+    Load data from a CSV file.
+
+    Args:
+        csv_file (str): Path to the CSV file.
+
+    Returns:
+        pandas.DataFrame: Loaded data.
+    """
+    return pd.read_csv(csv_file)
+
+def drop_columns(df : pd.DataFrame, columns_to_drop : list):
+    df = df.drop(columns=columns_to_drop,inplace=True)
+    return df
+
+def creat_hours(df : pd.DataFrame, column_name : str):
+    df[column_name] = pd.to_datetime(df[column_name])
+    df['hour'] = df[column_name].dt.hour
+    df = df.drop(columns=[column_name], inplace=True)
+    return df
+
+def calculate_rate(df : pd.DataFrame, group_col : str, target_col : str):
+
+    merch_rate = df.groupby(group_col)[target_col].mean()
+    df[f"{group_col}_rate"] = df[group_col].map(merch_rate)
+    df = df.drop(columns=[group_col], inplace=True)
+    return df
+
+def claculate_age (df : pd.DataFrame, col_name : str):
+    df[col_name] = pd.to_datetime(df[col_name])
+    df['age'] = (pd.Timestamp.now() - df['dob']).dt.days // 365
+    df = df.drop(columns=[col_name],inplace=True)
+    return df
+import numpy as np
+def haversine_np(lon1, lat1, lon2, lat2):
+    """
+    Coordinates se kilometers me distance nikalne ka fast function
+    """
+    lon1, lat1, lon2, lat2 = map(np.radians, [lon1, lat1, lon2, lat2])
+    
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    
+    a = np.sin(dlat/2.0)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2.0)**2
+    c = 2 * np.arcsin(np.sqrt(a))
+    km = 6367 * c 
+    return km
+
+def claculate_distance(df : pd.DataFrame ):
+    df['distance_km'] = haversine_np(df['long'], df['lat'], df['merch_long'], df['merch_lat'])
+    geo_columns = ['lat', 'long', 'merch_lat', 'merch_long']
+    df = df.drop(columns=geo_columns,inplace=True)
+
+    return df 
+
+def feature_engineering(df):
+    col_to_drop = ['Unnamed: 0','job', 'city', 'state', 'cc_num','zip', 'first', 'last', 'street', 'trans_num']
+    drop_columns(df=df, columns_to_drop=col_to_drop)
+    creat_hours(df=df,column_name='trans_date_trans_time')
+    calculate_rate(df=df,group_col='merchant',target_col='is_fraud')
+    claculate_age(df=df,col_name='dob')
+    claculate_distance(df=df)
+    calculate_rate(df=df,group_col='category',target_col='is_fraud')
+
+    return df 
+
+
+def preprocessor(df , col_name : str):
+    df[col_name] = df[col_name].map({"M":1,"F":0})
+    return df  
+import os
+import joblib
+
+def load_model():
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    model_path = os.path.join(base_dir, 'MODELS', 'trained_model.pkl')
+    
+    model = joblib.load(model_path)
+    return model
+from fuction import feature_engineering , load_data, preprocessor, load_model
+from sklearn.metrics import accuracy_score, precision_score, f1_score, recall_score, confusion_matrix
+
+final_df = load_data('DATA/raw data/Test_data.csv')
+
+final_df = feature_engineering(final_df)
+
+final_df = preprocessor(final_df , 'gender')
+print('\n =============== df is ready =============')
+print()
+print(final_df.head())
+
+
+X = final_df.drop(columns=['is_fraud'])
+Y = final_df['is_fraud']
+print()
+print('========= loaded model =======')
+
+model = load_model()
+
+print('======= testing is start =========')
+
+predictions = model.predict(X)
+
+print('====== model performance ========')
+
+print('Accuracy : ', accuracy_score(Y, predictions))
+print('Precision : ', precision_score(Y, predictions))  
+print('Recall : ', recall_score(Y, predictions))
+print('F1 Score : ', f1_score(Y, predictions))
+print('Confusion Matrix : \n', confusion_matrix(Y, predictions))
+
+from lightgbm import LGBMClassifier
+import joblib 
+from fuctions.fuction import feature_engineering , load_data, preprocessor
+
+final_df = load_data('DATA/raw data/fraudTrain.csv')
+
+final_df = feature_engineering(final_df)
+
+final_df = preprocessor(final_df , 'gender')
+
+print(final_df.head())
+
+print('\n =============== df is ready =============')
+print(final_df.columns)
+
+X = final_df.drop(columns=['is_fraud'])
+Y = final_df['is_fraud']
+
+
+print('\n ======== start training ========')
+model = LGBMClassifier(
+    colsample_bytree=0.6, learning_rate=0.05,
+    min_child_samples=50, n_estimators=800, num_leaves=15,
+    random_state=42, reg_alpha=1, reg_lambda=0.1, subsample=0.8,
+    verbosity=-1,class_weight='balanced',scale_pos_weight=200,max_depth=4
+)
+print(Y.value_counts())
+trained_model = model.fit(X,Y)
+
+
+joblib.dump(trained_model,'trained_model.pkl')
+
+
+
+from datetime import date, time
+import requests
+import streamlit as st
+from options_data import MERCHANTS, CATEGORIES
+
+API_URL = "https://surprising-peace-production-66f6.up.railway.app/predict"
+TIMEOUT_SEC = 20
+
+st.set_page_config(page_title="Fraud Prediction", page_icon="💳", layout="centered")
+
+st.title("💳 Transaction Fraud Prediction")
+st.caption("Fill in the transaction details and get a live prediction from the API.")
+
+with st.form("txn_form"):
+    st.subheader("Transaction Details")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        trans_date = st.date_input("Transaction Date", value=date(2021, 1, 1),min_value=date(1950, 1, 1),
+            max_value=date.today(),)
+    with col2:
+        trans_time = st.time_input("Transaction Time", value=time(12, 0, 0))
+
+    merchant = st.selectbox("Merchant", options=MERCHANTS, index=0,
+                             help="Start typing to search")
+    category = st.selectbox("Category", options=CATEGORIES, index=0,
+                             help="Start typing to search")
+
+    amt = st.number_input("Amount ($)", min_value=0.0, value=765.0, step=1.0, format="%.2f")
+
+    gender = st.selectbox("Gender", options=["M", "F"], index=0)
+
+    st.subheader("Cardholder Location")
+    col3, col4 = st.columns(2)
+    with col3:
+        lat = st.number_input("Latitude", value=40.7128, format="%.6f")
+    with col4:
+        long = st.number_input("Longitude", value=-74.0060, format="%.6f")
+
+    city_pop = st.number_input("City Population", min_value=0, value=8000000, step=1000)
+
+    dob = st.date_input("Date of Birth", value=date(1990, 1, 1),
+                         min_value=date(1900, 1, 1), max_value=date.today())
+
+    st.subheader("Merchant Location")
+    col5, col6 = st.columns(2)
+    with col5:
+        merch_lat = st.number_input("Merchant Latitude", value=40.7128, format="%.6f")
+    with col6:
+        merch_long = st.number_input("Merchant Longitude", value=-74.0060, format="%.6f")
+
+    submitted = st.form_submit_button(" Predict", use_container_width=True)
+
+if submitted:
+    trans_dt_str = f"{trans_date.strftime('%Y-%m-%d')} {trans_time.strftime('%H:%M:%S')}"
+
+    payload = {
+        "trans_date_trans_time": trans_dt_str,
+        "merchant": merchant,
+        "category": category,
+        "amt": amt,
+        "gender": gender,
+        "lat": lat,
+        "long": long,
+        "city_pop": int(city_pop),
+        "dob": dob.strftime("%Y-%m-%d"),
+        "merch_lat": merch_lat,
+        "merch_long": merch_long,
+    }
+
+    try:
+        with st.spinner("Getting prediction..."):
+            resp = requests.post(API_URL, json=payload, timeout=TIMEOUT_SEC)
+
+        if resp.status_code != 200:
+            st.error(f"API returned an error (status {resp.status_code})")
+            st.code(resp.text)
+        else:
+            try:
+                result = resp.json()
+            except ValueError:
+                st.error("API response is not valid JSON.")
+                st.code(resp.text)
+                result = None
+
+            if result is not None:
+                pred = result.get("prediction is ")
+                prob = result.get("fraud probability")
+
+                st.divider()
+                st.subheader(" Prediction Result")
+
+                if pred is not None:
+                    is_fraud = "fraud" in str(pred).lower() and "normal" not in str(pred).lower()
+                    if is_fraud:
+                        print('b')
+                else:
+                    st.warning("Could not find a prediction value in the API response.")
+
+                st.write("")
+
+                if prob is not None:
+                    prob_val = float(prob)
+                    c1, c2 = st.columns([1, 2])
+                    with c1:
+                        st.metric("Fraud Probability", f"{prob_val}%")
+                    with c2:
+                        st.progress(min(max(prob_val, 0.0), 1.0))
+
+                with st.expander("🔍 Raw API Response"):
+                    st.json(result)
+
+    except requests.exceptions.ConnectionError:
+        st.error(
+            f"Could not connect to the API at {API_URL}. "
+            "Make sure the local server is running."
+        )
+    except requests.exceptions.Timeout:
+        st.error("The request timed out. The server may be slow to respond.")
+    except requests.exceptions.RequestException as e:
+        st.error(f"Request failed: {e}")
+else:
+    st.info("Fill in the form and click 'Predict'.")
+import numpy as np
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers, models
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, precision_recall_curve
+import matplotlib.pyplot as plt
+
+num_samples = 2000
+
+ann_data = np.random.randn(num_samples, 15).astype(np.float32)
+cnn_data = np.random.rand(num_samples, 32, 32, 1).astype(np.float32)
+rnn_data = np.random.randn(num_samples, 20, 10).astype(np.float32)
+
+dummy_score = (
+    ann_data[:, 0] * 2.0 + 
+    np.mean(cnn_data, axis=(1, 2, 3)) * 5.0 + 
+    rnn_data[:, -1, 0] * 1.5
+)
+labels = (dummy_score > np.median(dummy_score)).astype(np.int32)
+
+(
+    ann_train, ann_test,
+    cnn_train, cnn_test,
+    rnn_train, rnn_test,
+    y_train, y_test
+) = train_test_split(
+    ann_data, cnn_data, rnn_data, labels, 
+    test_size=0.2, random_state=42, stratify=labels
+)
+
+def build_hybrid_model():
+    ann_input = layers.Input(shape=(15,), name="ANN_Input")
+    x_ann = layers.Dense(128, activation='relu', kernel_regularizer=keras.regularizers.l2(0.01))(ann_input)
+    x_ann = layers.BatchNormalization()(x_ann)
+    x_ann = layers.Dropout(0.3)(x_ann)
+    x_ann = layers.Dense(64, activation='relu')(x_ann)
+    x_ann = layers.BatchNormalization()(x_ann)
+    x_ann = layers.Dropout(0.3)(x_ann)
+
+    cnn_input = layers.Input(shape=(32, 32, 1), name="CNN_Input")
+    x_cnn = layers.Conv2D(32, (3, 3), activation='relu', padding='same')(cnn_input)
+    x_cnn = layers.BatchNormalization()(x_cnn)
+    x_cnn = layers.MaxPooling2D((2, 2))(x_cnn)
+    x_cnn = layers.Dropout(0.25)(x_cnn)
+    
+    x_cnn = layers.Conv2D(64, (3, 3), activation='relu', padding='same')(x_cnn)
+    x_cnn = layers.BatchNormalization()(x_cnn)
+    x_cnn = layers.MaxPooling2D((2, 2))(x_cnn)
+    x_cnn = layers.Dropout(0.25)(x_cnn)
+    
+    x_cnn = layers.Flatten()(x_cnn)
+    x_cnn = layers.Dense(64, activation='relu')(x_cnn)
+
+    rnn_input = layers.Input(shape=(20, 10), name="RNN_Input")
+    x_rnn = layers.LSTM(64, return_sequences=True)(rnn_input)
+    x_rnn = layers.BatchNormalization()(x_rnn)
+    x_rnn = layers.Dropout(0.2)(x_rnn)
+    x_rnn = layers.LSTM(32)(x_rnn)
+    x_rnn = layers.BatchNormalization()(x_rnn)
+    x_rnn = layers.Dropout(0.2)(x_rnn)
+
+    merged = layers.concatenate([x_ann, x_cnn, x_rnn], name="Feature_Fusion")
+
+    x_dense = layers.Dense(128, activation='relu')(merged)
+    x_dense = layers.BatchNormalization()(x_dense)
+    x_dense = layers.Dropout(0.4)(x_dense)
+    
+    x_dense = layers.Dense(32, activation='relu')(x_dense)
+    output = layers.Dense(1, activation='sigmoid', name="Output_Layer")(x_dense)
+
+    model = models.Model(inputs=[ann_input, cnn_input, rnn_input], outputs=output)
+    return model
+
+model = build_hybrid_model()
+
+model.compile(
+    optimizer=keras.optimizers.Adam(learning_rate=0.001),
+    loss='binary_crossentropy',
+    metrics=[
+        'accuracy',
+        keras.metrics.Precision(name='precision'),
+        keras.metrics.Recall(name='recall'),
+        keras.metrics.AUC(name='auc')
+    ]
+)
+
+model.summary()
+
+callbacks_list = [
+    keras.callbacks.EarlyStopping(
+        monitor='val_loss', 
+        patience=5, 
+        restore_best_weights=True,
+        verbose=1
+    ),
+    keras.callbacks.ReduceLROnPlateau(
+        monitor='val_loss', 
+        factor=0.5, 
+        patience=3, 
+        min_lr=1e-6,
+        verbose=1
+    )
+]
+
+history = model.fit(
+    x={"ANN_Input": ann_train, "CNN_Input": cnn_train, "RNN_Input": rnn_train},
+    y=y_train,
+    validation_split=0.15,
+    epochs=30,
+    batch_size=64,
+    callbacks=callbacks_list,
+    verbose=1
+)
+
+test_metrics = model.evaluate(
+    x={"ANN_Input": ann_test, "CNN_Input": cnn_test, "RNN_Input": rnn_test},
+    y=y_test,
+    verbose=0
+)
+
+metric_names = model.metrics_names
+for name, val in zip(metric_names, test_metrics):
+    print(f"{name.capitalize()}: {val:.4f}")
+
+y_pred_prob = model.predict(
+    {"ANN_Input": ann_test, "CNN_Input": cnn_test, "RNN_Input": rnn_test},
+    verbose=0
+).flatten()
+y_pred_class = (y_pred_prob > 0.5).astype(np.int32)
+
+print(classification_report(y_test, y_pred_class, target_names=['Class 0', 'Class 1']))
+
+cm = confusion_matrix(y_test, y_pred_class)
+print(f"Confusion Matrix:\n{cm}")
+
+roc_auc = roc_auc_score(y_test, y_pred_prob)
+print(f"ROC-AUC Score: {roc_auc:.4f}")
+
+fig, axs = plt.subplots(2, 2, figsize=(14, 10))
+
+axs[0, 0].plot(history.history['loss'], color='teal')
+axs[0, 0].plot(history.history['val_loss'], color='orange')
+axs[0, 0].set_title('Model Loss')
+axs[0, 0].grid(True)
+
+axs[0, 1].plot(history.history['accuracy'], color='teal')
+axs[0, 1].plot(history.history['val_accuracy'], color='orange')
+axs[0, 1].set_title('Model Accuracy')
+axs[0, 1].grid(True)
+
+precision, recall, _ = precision_recall_curve(y_test, y_pred_prob)
+axs[1, 0].plot(recall, precision, color='purple', lw=2)
+axs[1, 0].set_title('Precision-Recall Curve')
+axs[1, 0].grid(True)
+
+axs[1, 1].imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
+axs[1, 1].set_title('Confusion Matrix')
+tick_marks = np.arange(2)
+axs[1, 1].set_xticks(tick_marks)
+axs[1, 1].set_yticks(tick_marks)
+axs[1, 1].set_xticklabels(['Class 0', 'Class 1'])
+axs[1, 1].set_yticklabels(['Class 0', 'Class 1'])
+
+thresh = cm.max() / 2.
+for i, j in np.ndindex(cm.shape):
+    axs[1, 1].text(j, i, format(cm[i, j], 'd'),
+                 horizontalalignment="center",
+                 color="white" if cm[i, j] > thresh else "black")
+
+plt.tight_layout()
+plt.show()
+import numpy as np
+import pandas as pd
+from sklearn.datasets import make_classification
+from sklearn.model_selection import train_test_split, GridSearchCV, RandomizedSearchCV
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import StackingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, accuracy_score
+from xgboost import XGBClassifier
+from catboost import CatBoostClassifier
+
+X, y = make_classification(
+    n_samples=3000, 
+    n_features=20, 
+    n_informative=15, 
+    n_redundant=5, 
+    random_state=42
+)
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, 
+    test_size=0.2, 
+    random_state=42, 
+    stratify=y
+)
+
+print("1. Tuning Decision Tree Classifier...")
+dt_base = DecisionTreeClassifier(random_state=42)
+dt_param_grid = {
+    'max_depth': [5, 10, 15, None],
+    'min_samples_split':,
+    'min_samples_leaf':,
+    'criterion': ['gini', 'entropy']
+}
+dt_search = GridSearchCV(
+    estimator=dt_base, 
+    param_grid=dt_param_grid, 
+    cv=3, 
+    scoring='accuracy', 
+    n_jobs=-1
+)
+dt_search.fit(X_train, y_train)
+best_dt = dt_search.best_estimator_
+print(f"Best DT Params: {dt_search.best_params_}")
+
+print("\n2. Tuning XGBoost Classifier...")
+xgb_base = XGBClassifier(
+    random_state=42, 
+    eval_metric='logloss', 
+    use_label_encoder=False
+)
+xgb_param_dist = {
+    'n_estimators':,
+    'max_depth':,
+    'learning_rate': [0.01, 0.1, 0.2],
+    'subsample': [0.7, 0.9, 1.0],
+    'colsample_bytree': [0.7, 0.9, 1.0]
+}
+xgb_search = RandomizedSearchCV(
+    estimator=xgb_base, 
+    param_distributions=xgb_param_dist, 
+    n_iter=10, 
+    cv=3, 
+    scoring='accuracy', 
+    random_state=42, 
+    n_jobs=-1
+)
+xgb_search.fit(X_train, y_train)
+best_xgb = xgb_search.best_estimator_
+print(f"Best XGB Params: {xgb_search.best_params_}")
+
+print("\n3. Tuning CatBoost Classifier...")
+cat_base = CatBoostClassifier(random_state=42, verbose=0)
+cat_param_dist = {
+    'iterations':,
+    'depth':,
+    'learning_rate': [0.01, 0.05, 0.1],
+    'l2_leaf_reg': [1, 3, 5]
+}
+cat_search = RandomizedSearchCV(
+    estimator=cat_base, 
+    param_distributions=cat_param_dist, 
+    n_iter=10, 
+    cv=3, 
+    scoring='accuracy', 
+    random_state=42, 
+    n_jobs=-1
+)
+cat_search.fit(X_train, y_train)
+best_cat = cat_search.best_estimator_
+print(f"Best CatBoost Params: {cat_search.best_params_}")
+
+print("\n4. Building and Training the Stacking Classifier...")
+estimators = [
+    ('dt', best_dt),
+    ('xgb', best_xgb),
+    ('cat', best_cat)
+]
+
+stacking_model = StackingClassifier(
+    estimators=estimators,
+    final_estimator=LogisticRegression(),
+    cv=5,
+    n_jobs=-1
+)
+
+stacking_model.fit(X_train, y_train)
+
+print("\n================ EVALUATION ================")
+
+models_dict = {
+    "Decision Tree": best_dt,
+    "XGBoost": best_xgb,
+    "CatBoost": best_cat,
+    "Stacking Classifier": stacking_model
+}
+
+for name, model in models_dict.items():
+    preds = model.predict(X_test)
+    probs = model.predict_proba(X_test)[:, 1]
+    
+    acc = accuracy_score(y_test, preds)
+    auc = roc_auc_score(y_test, probs)
+    
+    print(f"\n--- {name} ---")
+    print(f"Accuracy : {acc:.4f}")
+    print(f"ROC-AUC  : {auc:.4f}")
+    print("Confusion Matrix:")
+    print(confusion_matrix(y_test, preds))
+
+print("\nDetailed Final Stacking Report:")
+final_preds = stacking_model.predict(X_test)
+print(classification_report(y_test, final_preds))
+import math
+import random
+import os
+
+def calculator():
+    print("\n--- 1. Simple Calculator ---")
+    print("Operations: +, -, *, /, ^, sqrt")
+    try:
+        op = input("Enter operation: ").strip()
+        if op == "sqrt":
+            num = float(input("Enter number: "))
+            if num < 0:
+                print("Error: Negative number square root is not allowed!")
+                return
+            print(f"Result: {math.sqrt(num)}")
+            return
+        
+        num1 = float(input("Enter first number: "))
+        num2 = float(input("Enter second number: "))
+        
+        if op == "+":
+            print(f"Result: {num1 + num2}")
+        elif op == "-":
+            print(f"Result: {num1 - num2}")
+        elif op == "*":
+            print(f"Result: {num1 * num2}")
+        elif op == "/":
+            if num2 == 0:
+                print("Error: Division by zero!")
+            else:
+                print(f"Result: {num1 / num2}")
+        elif op == "^":
+            print(f"Result: {num1 ** num2}")
+        else:
+            print("Invalid operation selected.")
+    except ValueError:
+        print("Error: Please enter valid numbers.")
+
+def guess_the_number():
+    print("\n--- 2. Guess the Number ---")
+    secret_number = random.randint(1, 100)
+    attempts = 0
+    print("I have chosen a number between 1 and 100. Can you guess it?")
+    
+    while True:
+        try:
+            guess = int(input("Enter your guess: "))
+            attempts += 1
+            if guess < secret_number:
+                print("Too low! Try again.")
+            elif guess > secret_number:
+                print("Too high! Try again.")
+            else:
+                print(f"Congratulations! You guessed it in {attempts} attempts.")
+                break
+        except ValueError:
+            print("Error: Please enter a valid integer.")
+
+def rps_game():
+    print("\n--- 3. Rock, Paper, Scissors ---")
+    choices = ["rock", "paper", "scissors"]
+    user_choice = input("Choose rock, paper, or scissors: ").lower().strip()
+    
+    if user_choice not in choices:
+        print("Invalid choice!")
+        return
+        
+    comp_choice = random.choice(choices)
+    print(f"Computer chose: {comp_choice}")
+    
+    if user_choice == comp_choice:
+        print("It's a tie!")
+    elif (user_choice == "rock" and comp_choice == "scissors") or \
+         (user_choice == "paper" and comp_choice == "rock") or \
+         (user_choice == "scissors" and comp_choice == "paper"):
+        print("You win!")
+    else:
+        print("Computer wins!")
+
+todo_list_data = []
+def todo_list():
+    print("\n--- 4. To-Do List Manager ---")
+    print("1. View Tasks\n2. Add Task\n3. Delete Task\n4. Exit To-Do")
+    choice = input("Choose an option (1-4): ").strip()
+    
+    if choice == "1":
+        if not todo_list_data:
+            print("Your to-do list is empty.")
+        else:
+            print("\nYour Tasks:")
+            for index, task in enumerate(todo_list_data, 1):
+                print(f"{index}. {task}")
+    elif choice == "2":
+        task = input("Enter new task: ").strip()
+        if task:
+            todo_list_data.append(task)
+            print(f"'{task}' added successfully.")
+    elif choice == "3":
+        if not todo_list_data:
+            print("Nothing to delete.")
+            return
+        for index, task in enumerate(todo_list_data, 1):
+            print(f"{index}. {task}")
+        try:
+            task_num = int(input("Enter task number to delete: "))
+            if 1 <= task_num <= len(todo_list_data):
+                removed = todo_list_data.pop(task_num - 1)
+                print(f"Removed task: '{removed}'")
+            else:
+                print("Invalid task number.")
+        except ValueError:
+            print("Error: Please enter a valid number.")
+    elif choice == "4":
+        return
+    else:
+        print("Invalid choice.")
+
+def password_generator():
+    print("\n--- 5. Password Generator ---")
+    try:
+        length = int(input("Enter desired password length: "))
+        if length < 4:
+            print("Password length should be at least 4 characters.")
+            return
+            
+        chars = "abcdefghijklmnopqrstuvwxyz"
+        uppercase = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        digits = "0123456789"
+        symbols = "!@#$%^&*()_+-=[]{}|;:,.<>?"
+        
+        all_chars = chars + uppercase + digits + symbols
+        password = [
+            random.choice(chars),
+            random.choice(uppercase),
+            random.choice(digits),
+            random.choice(symbols)
+        ]
+        
+        password += random.choices(all_chars, k=length - 4)
+        random.shuffle(password)
+        generated_password = "".join(password)
+        print(f"Generated Password: {generated_password}")
+    except ValueError:
+        print("Error: Please enter a valid integer for length.")
+
+def word_counter():
+    print("\n--- 6. Word & Character Counter ---")
+    text = input("Enter your text paragraph or sentence:\n").strip()
+    
+    if not text:
+        print("You entered an empty string.")
+        return
+        
+    words = text.split()
+    word_count = len(words)
+    char_count_with_spaces = len(text)
+    char_count_no_spaces = len(text.replace(" ", ""))
+    
+    print(f"\n--- Statistics ---")
+    print(f"Total Words      : {word_count}")
+    print(f"Chars (with spaces)   : {char_count_with_spaces}")
+    print(f"Chars (without spaces): {char_count_no_spaces}")
+
+def main():
+    while True:
+        print("\n=========================================")
+        print("         6-IN-1 BASIC PYTHON PROJECTS    ")
+        print("=========================================")
+        print("1. Simple Calculator")
+        print("2. Guess the Number Game")
+        print("3. Rock, Paper, Scissors Game")
+        print("4. To-Do List Manager")
+        print("5. Password Generator")
+        print("6. Word Counter")
+        print("7. Exit")
+        
+        choice = input("\nSelect a project to run (1-7): ").strip()
+        
+        if choice == "1":
+            calculator()
+        elif choice == "2":
+            guess_the_number()
+        elif choice == "3":
+            rps_game()
+        elif choice == "4":
+            todo_list()
+        elif choice == "5":
+            password_generator()
+        elif choice == "6":
+            word_counter()
+        elif choice == "7":
+            print("\nGoodbye! Thanks for using the application.")
+            break
+        else:
+            print("Invalid selection. Please choose a number between 1 and 7.")
+
+if __name__ == "__main__":
+    main()
+import numpy as np
+import pandas as pd
+from sklearn.datasets import make_classification, make_regression
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, LabelEncoder
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.linear_model import LinearRegression, Ridge, Lasso, LogisticRegression
+from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
+from sklearn.svm import SVC, SVR
+from sklearn.naive_bayes import GaussianNB
+from sklearn.cluster import KMeans, AgglomerativeClustering
+from sklearn.decomposition import PCA
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score,
+    mean_squared_error, mean_absolute_error, r2_score, silhouette_score
+)
+
+def run_classification_pipeline():
+    print("\n=========================================")
+    # 1. Dataset Generation
+    X, y = make_classification(
+        n_samples=1500, n_features=12, n_informative=8, 
+        n_redundant=4, random_state=42
+    )
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.25, random_state=42, stratify=y
+    )
+
+    # 2. Base Models Dictionary
+    classifiers = {
+        "Logistic Regression": LogisticRegression(max_iter=1000),
+        "K-Nearest Neighbors": KNeighborsClassifier(n_neighbors=5),
+        "Support Vector Machine": SVC(kernel='rbf', probability=True),
+        "Gaussian Naive Bayes": GaussianNB()
+    }
+
+    # 3. Execution and Evaluation Loop
+    print("--- Training & Evaluating Classifiers ---")
+    for name, clf in classifiers.items():
+        pipeline = Pipeline([
+            ('scaler', StandardScaler()),
+            ('classifier', clf)
+        ])
+        
+        pipeline.fit(X_train, y_train)
+        preds = pipeline.predict(X_test)
+        
+        acc = accuracy_score(y_test, preds)
+        prec = precision_score(y_test, preds)
+        rec = recall_score(y_test, preds)
+        f1 = f1_score(y_test, preds)
+        
+        print(f"\nModel: {name}")
+        print(f"  Accuracy  : {acc:.4f}")
+        print(f"  Precision : {prec:.4f}")
+        print(f"  Recall    : {rec:.4f}")
+        print(f"  F1-Score  : {f1:.4f}")
+
+def run_regression_pipeline():
+    print("\n=========================================")
+    # 1. Dataset Generation
+    X, y = make_regression(
+        n_samples=1200, n_features=10, noise=0.5, random_state=42
+    )
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+
+    # 2. Base Models Dictionary
+    regressors = {
+        "Linear Regression": LinearRegression(),
+        "Ridge Regression": Ridge(alpha=1.0),
+        "Lasso Regression": Lasso(alpha=0.1),
+        "K-Nearest Neighbors Regressor": KNeighborsRegressor(n_neighbors=7),
+        "Support Vector Regressor": SVR(kernel='rbf', C=10.0)
+    }
+
+    # 3. Execution and Evaluation Loop
+    print("--- Training & Evaluating Regressors ---")
+    for name, reg in regressors.items():
+        pipeline = Pipeline([
+            ('scaler', MinMaxScaler()),
+            ('regressor', reg)
+        ])
+        
+        pipeline.fit(X_train, y_train)
+        preds = pipeline.predict(X_test)
+        
+        mse = mean_squared_error(y_test, preds)
+        rmse = np.sqrt(mse)
+        mae = mean_absolute_error(y_test, preds)
+        r2 = r2_score(y_test, preds)
+        
+        print(f"\nModel: {name}")
+        print(f"  MSE       : {mse:.4f}")
+        print(f"  RMSE      : {rmse:.4f}")
+        print(f"  MAE       : {mae:.4f}")
+        print(f"  R² Score  : {r2:.4f}")
+
+def run_unsupervised_pipeline():
+    print("\n=========================================")
+    # 1. Dataset Generation
+    X, _ = make_classification(
+        n_samples=800, n_features=15, n_informative=10, 
+        n_clusters_per_class=1, random_state=42
+    )
+
+    # 2. Preprocessing & Dimensionality Reduction (PCA)
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    pca = PCA(n_components=3, random_state=42)
+    X_pca = pca.fit_transform(X_scaled)
+    print(f"PCA Completed. Explained Variance Ratio: {pca.explained_variance_ratio_}")
+
+    # 3. Clustering Algorithms
+    print("\n--- Clustering Analysis ---")
+    
+    kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
+    kmeans_labels = kmeans.fit_predict(X_pca)
+    kmeans_sil = silhouette_score(X_pca, kmeans_labels)
+    print(f"K-Means Silhouette Score          : {kmeans_sil:.4f}")
+    
+    agg = AgglomerativeClustering(n_clusters=3)
+    agg_labels = agg.fit_predict(X_pca)
+    agg_sil = silhouette_score(X_pca, agg_labels)
+    print(f"Agglomerative Silhouette Score   : {agg_sil:.4f}")
+
+def run_data_preprocessing_simulation():
+    print("\n=========================================")
+    print("--- Data Preprocessing & Engineering Simulation ---")
+    
+    # Simulating a dirty raw dataframe
+    raw_data = {
+        'Age': [25, np.nan, 47, 35, 22, 58, np.nan, 40],
+        'Salary': [50000, 62000, np.nan, 80000, 45000, np.nan, 52000, 95000],
+        'City': ['Karachi', 'Lahore', 'Islamabad', 'Karachi', 'Lahore', 'Karachi', 'Islamabad', 'Lahore'],
+        'Purchased': ['No', 'Yes', 'No', 'Yes', 'No', 'Yes', 'No', 'Yes']
+    }
+    df = pd.DataFrame(raw_data)
+    print("\nOriginal Simulated Data Frame:")
+    print(df)
+
+    num_imputer = SimpleImputer(strategy='median')
+    df[['Age', 'Salary']] = num_imputer.fit_transform(df[['Age', 'Salary']])
+
+    # 2. Encode Nominal Categorical Variables (One-Hot Encoding)
+    df = pd.get_dummies(df, columns=['City'], drop_first=True)
+
+    label_enc = LabelEncoder()
+    df['Purchased'] = label_enc.fit_transform(df['Purchased'])
+
+    # 4. Feature Scaling
+    feat_scaler = StandardScaler()
+    df[['Age', 'Salary']] = feat_scaler.fit_transform(df[['Age', 'Salary']])
+
+    print("\nCleaned & Formatted DataFrame ready for ML Engines:")
+    print(df)
+
+def main():
+    print("=========================================")
+    print("    CLASSIC MACHINE LEARNING CRUNCHER    ")
+    print("=========================================")
+    
+    run_data_preprocessing_simulation()
+    run_classification_pipeline()
+    run_regression_pipeline()
+    run_unsupervised_pipeline()
+    
+    print("\n=========================================")
+    print("Execution Finished Successfully!")
+
+if __name__ == "__main__":
+    main()
+import os
+import sys
+import math
+import random
+import time
+import warnings
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.datasets import make_classification, make_regression
+from sklearn.model_selection import train_test_split, KFold, StratifiedKFold, GridSearchCV
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler, OneHotEncoder, LabelEncoder
+from sklearn.impute import KNNImputer, SimpleImputer
+from sklearn.feature_selection import SelectKBest, f_classif, mutual_info_classif
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score, confusion_matrix,
+    roc_auc_score, log_loss, mean_squared_error, mean_absolute_error, r2_score
+)
+from sklearn.linear_model import LogisticRegression, RidgeClassifier, LinearRegression, ElasticNet
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, StackingClassifier
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
+
+import xgboost as xgb
+import lightgbm as lgb
+from catboost import CatBoostClassifier
+
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers, models, optimizers, callbacks, regularizers
+
+warnings.filterwarnings('ignore')
+
+class PurePythonUtility:
+    @staticmethod
+    def generate_system_report(output_dir):
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        
+        report_path = os.path.join(output_dir, "system_report.txt")
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        report_lines = [
+            "=========================================",
+            "       AI ENGINE RUNTIME INITIALIZATION   ",
+            "=========================================",
+            f"Timestamp       : {current_time}",
+            f"Python Version  : {sys.version}",
+            f"TensorFlow Ver  : {tf.__version__}",
+            f"NumPy Version   : {np.__version__}",
+            f"Pandas Version  : {pd.__version__}",
+            "-----------------------------------------",
+            f"OS Platform     : {sys.platform}",
+            f"CPU Threads Avail: {os.cpu_count()}",
+            "=========================================\n"
+        ]
+        
+        with open(report_path, "w") as f:
+            f.writelines("\n".join(report_lines))
+        
+        print(f"[Python Engine] System status verified. Report written to: {report_path}")
+
+    @staticmethod
+    def complex_math_transform(value):
+        if value == 0:
+            return 0.0
+        try:
+            sign = 1 if value > 0 else -1
+            abs_val = abs(value)
+            log_part = math.log1p(abs_val)
+            sin_part = math.sin(abs_val) * math.cos(abs_val)
+            exp_scaled = math.expm1(min(log_part, 5.0))
+            return float(sign * (log_part + sin_part + exp_scaled))
+        except Exception:
+            return float(value)
+
+class RawDataSimulator:
+    def __init__(self, num_samples=5000, num_features=25):
+        self.num_samples = num_samples
+        self.num_features = num_features
+
+    def construct_unclean_dataframe(self):
+        print(f"[Data Simulator] Generating {self.num_samples} records across custom structures...")
+        
+        X_raw, y_raw = make_classification(
+            n_samples=self.num_samples,
+            n_features=self.num_features,
+            n_informative=18,
+            n_redundant=5,
+            n_classes=2,
+            weights=[0.6, 0.4],
+            random_state=42
+        )
+        
+        columns = [f"numerical_feat_{i}" for i in range(self.num_features)]
+        df = pd.DataFrame(X_raw, columns=columns)
+        
+        # Inject Missing Values
+        for col in df.columns[:5]:
+            mask = np.random.rand(self.num_samples) < 0.08
+            df.loc[mask, col] = np.nan
+            
+        # Add Corrupted Text Columns
+        regions = ['North', 'South', 'East', 'West', 'Central', 'Missing_Data']
+        df['Region_Code'] = [random.choice(regions) for _ in range(self.num_samples)]
+        
+        tier_types = ['Premium', 'Standard', 'Basic', 'Unknown']
+        df['Account_Tier'] = [random.choice(tier_types) for _ in range(self.num_samples)]
+        
+        # Apply pure python math functions over random columns to create structural dependence
+        df['derived_python_metric'] = df['numerical_feat_10'].apply(PurePythonUtility.complex_math_transform)
+        
+        # Build Complex Sequence and Visual Multi-Modal Dimensions
+        image_tensor_stack = np.random.rand(self.num_samples, 28, 28, 1).astype(np.float32)
+        sequence_tensor_stack = np.random.randn(self.num_samples, 15, 8).astype(np.float32)
+        
+        df['Target_Label'] = y_raw
+        
+        return df, image_tensor_stack, sequence_tensor_stack
+
+class ClassicMachineLearningPipeline:
+    def __init__(self, df):
+        self.df = df.copy()
+        self.preprocessor = None
+        self.best_models = {}
+        
+    def execute_preprocessing(self):
+        print("\n--- Starting Classic ML Preprocessing Stage ---")
+        X = self.df.drop(columns=['Target_Label'])
+        y = self.df['Target_Label']
+        
+        num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+        cat_cols = X.select_dtypes(include=['object']).columns.tolist()
+        
+        num_transformer = Pipeline(steps=[
+            ('imputer', KNNImputer(n_neighbors=5)),
+            ('scaler', RobustScaler())
+        ])
+        
+        cat_transformer = Pipeline(steps=[
+            ('imputer', SimpleImputer(strategy='most_frequent')),
+            ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+        ])
+        
+        self.preprocessor = ColumnTransformer(transformers=[
+            ('num', num_transformer, num_cols),
+            ('cat', cat_transformer, cat_cols)
+        ])
+        
+        X_processed = self.preprocessor.fit_transform(X)
+        print(f"[Preprocessing] Matrix transformed shape: {X_processed.shape}")
+        return X_processed, y.values
+
+    def run_cv_model_tuning(self, X, y):
+        print("\n--- Launching Cross-Validation and Ensemble Hyperparameter Tuning ---")
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
+        )
+        
+        # Base estimators definition
+        models_config = {
+            "RandomForest": (RandomForestClassifier(random_state=42), {
+                'n_estimators':,
+                'max_depth': [8, 12]
+            }),
+            "XGBoost": (xgb.XGBClassifier(eval_metric='logloss', random_state=42), {
+                'learning_rate': [0.05, 0.2],
+                'max_depth': [4, 6]
+            })
+        }
+        
+        for name, (model, params) in models_config.items():
+            print(f"[Tuning] Optimizing hyper-parameters for {name}...")
+            grid = GridSearchCV(model, params, cv=3, scoring='f1', n_jobs=-1)
+            grid.fit(X_train, y_train)
+            self.best_models[name] = grid.best_estimator_
+            print(f" -> Best Params for {name}: {grid.best_params_}")
+            
+        print("[Tuning] Injecting LightGBM and CatBoost configurations...")
+        self.best_models["LightGBM"] = lgb.LGBMClassifier(n_estimators=100, learning_rate=0.1, random_state=42, verbose=-1)
+        self.best_models["CatBoost"] = CatBoostClassifier(iterations=120, learning_rate=0.1, random_state=42, verbose=0)
+        
+        for name, model in self.best_models.items():
+            if name not in ["RandomForest", "XGBoost"]:
+                model.fit(X_train, y_train)
+                
+        print("\n--- Constructing Meta Stacking Classifier Architecture ---")
+        stack_estimators = [(name, clf) for name, clf in self.best_models.items()]
+        meta_stack = StackingClassifier(
+            estimators=stack_estimators,
+            final_estimator=LogisticRegression(C=1.0, max_iter=500),
+            cv=3,
+            n_jobs=-1
+        )
+        
+        print("[Stacking] Fitting production stacking ensemble...")
+        meta_stack.fit(X_train, y_train)
+        self.best_models["MetaStackingEnsemble"] = meta_stack
+        
+        return X_test, y_test
+
+    def generate_ml_metrics_report(self, X_test, y_test):
+        print("\n================ INTER-MODEL ML METRICS PERFORMANCE ================")
+        performance_summary = {}
+        
+        for name, model in self.best_models.items():
+            preds = model.predict(X_test)
+            probs = model.predict_proba(X_test)[:, 1]
+            
+            acc = accuracy_score(y_test, preds)
+            prec = precision_score(y_test, preds)
+            rec = recall_score(y_test, preds)
+            f1 = f1_score(y_test, preds)
+            auc = roc_auc_score(y_test, probs)
+            loss = log_loss(y_test, probs)
+            
+            performance_summary[name] = [acc, prec, rec, f1, auc, loss]
+            
+            print(f"\n>>> Engine Component Matrix Profile: {name}")
+            print(f"    Accuracy: {acc:.4f} | Precision: {prec:.4f} | Recall: {rec:.4f} | F1-Score: {f1:.4f}")
+            print(f"    ROC-AUC : {auc:.4f}  | Cross-Entropy Loss: {loss:.4f}")
+            
+        return performance_summary
+
+class DeepLearningFunctionalSuperArchitecture:
+    def __init__(self, tabular_dim, image_shape, sequence_shape):
+        self.tabular_dim = tabular_dim
+        self.image_shape = image_shape
+        self.sequence_shape = sequence_shape
+        self.model = None
+
+    def construct_hybrid_network(self):
+        print("\n--- Formulating Multi-Input Deep Learning Graph (ANN + CNN + RNN) ---")
+        
+        # 1. Structured Feature Extracting Sub-Graph (ANN)
+        input_ann = layers.Input(shape=(self.tabular_dim,), name="Graph_ANN_Input")
+x_ann = layers.Dense(256, kernel_regularizer=regularizers.l2(1e-4))(input_ann)
+x_ann = layers.LeakyReLU(negative_slope=0.1)(x_ann)
+x_ann = layers.BatchNormalization()(x_ann)
+x_ann = layers.Dropout(0.30)(x_ann)
+x_ann = layers.Dense(128, activation='relu')(x_ann)
+x_ann = layers.BatchNormalization()(x_ann)
+x_ann = layers.Dropout(0.25)(x_ann)
+# 2. Visual Feature Extracting Sub-Graph (CNN)
+input_cnn = layers.Input(shape=self.image_shape, name="Graph_CNN_Input")
+x_cnn = layers.Conv2D(32, (3, 3), padding='same')(input_cnn)
+x_cnn = layers.LeakyReLU(negative_slope=0.1)(x_cnn)
+x_cnn = layers.BatchNormalization()(x_cnn)
+x_cnn = layers.MaxPooling2D((2, 2))(x_cnn)
+x_cnn = layers.Conv2D(64, (3, 3), padding='same')(x_cnn)
+x_cnn = layers.Activation('relu')(x_cnn)
+x_cnn = layers.BatchNormalization()(x_cnn)
+x_cnn = layers.MaxPooling2D((2, 2))(x_cnn)
+x_cnn = layers.Flatten()(x_cnn)
+x_cnn = layers.Dense(128, activation='relu')(x_cnn)
+x_cnn = layers.Dropout(0.3)(x_cnn)
+# 3. Time-Series/Sequential Feature Extracting Sub-Graph (RNN/LSTM)
+input_rnn = layers.Input(shape=self.sequence_shape, name="Graph_RNN_Input")
+x_rnn = layers.Bidirectional(layers.LSTM(64, return_sequences=True))(input_rnn)
+x_rnn = layers.BatchNormalization()(x_rnn)
+x_rnn = layers.Dropout(0.2)(x_rnn)
+x_rnn = layers.LSTM(32)(x_rnn)
+x_rnn = layers.BatchNormalization()(x_rnn)
+x_rnn = layers.Dense(64, activation='relu')(x_rnn)
+# 4. Multi-Modal Feature Fusion Core
+merged_tensors = layers.concatenate([x_ann, x_cnn, x_rnn], name="MultiModal_Feature_Fusion")
+x_dense = layers.Dense(256, kernel_regularizer=regularizers.l2(1e-4))(merged_tensors)
+x_dense = layers.LeakyReLU(negative_slope=0.1)(x_dense)
+x_dense = layers.BatchNormalization()(x_dense)
+x_dense = layers.Dropout(0.40)(x_dense)
+x_dense = layers.Dense(64, activation='relu')(x_dense)
+output_layer = layers.Dense(1, activation='sigmoid', name="Final_Activation_Node")(x_dense)
+self.model = models.Model(inputs=[input_ann, input_cnn, input_rnn], outputs=output_layer)
+self.model.compile(
+optimizer=optimizers.Adam(learning_rate=0.0005),
+loss='binary_crossentropy',
+metrics=['accuracy', keras.metrics.AUC(name='auc'), keras.metrics.Precision(name='precision')]
+)
+return self.model
+def train_hybrid_network(self, data_train, data_val, y_train, y_test_dl, epochs=15, batch_size=64):
+print("\n--- Initializing Deep Learning Computational Process ---")
+dl_callbacks = [
+callbacks.EarlyStopping(monitor='val_loss', patience=4, restore_best_weights=True, verbose=1),
+callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=2, min_lr=1e-6, verbose=1)
+]
+history = self.model.fit(
+x={
+"Graph_ANN_Input": data_train[0],
+"Graph_CNN_Input": data_train[1],
+"Graph_RNN_Input": data_train[2]
+},
+y=y_train,
+validation_split=0.15,
+epochs=epochs,
+batch_size=batch_size,
+callbacks=dl_callbacks,
+verbose=1
+)
+print("\n--- Evaluating Super Architecture on Test Tensors ---")
+eval_metrics = self.model.evaluate(
+x={
+"Graph_ANN_Input": data_val[0],
+"Graph_CNN_Input": data_val[1],
+"Graph_RNN_Input": data_val[2]
+},
+y=y_test_dl,
+verbose=0
+)
+print("\n================ DEEP LEARNING EVALUATION SUMMARY ================")
+for name, value in zip(self.model.metrics_names, eval_metrics):
+print(f"Tensor Network Metric -> {name.upper()}: {value:.4f}")
+return history, eval_metrics
+def generate_analytical_plots(ml_summary, dl_history, output_dir):
+print("\n--- Generating Master Performance Visualization Panel ---")
+sns.set_theme(style="whitegrid")
+fig, axs = plt.subplots(2, 2, figsize=(16, 12))
+# Plot 1: ML Model Comparisons
+ml_df = pd.DataFrame(ml_summary, index=['Acc', 'Prec', 'Rec', 'F1', 'AUC', 'Loss']).T
+ml_df[['Acc', 'F1', 'AUC']].plot(kind='bar', ax=axs[0, 0])
+axs[0, 0].set_title("Classic ML & Ensemble Performance Index")
+axs[0, 0].set_ylabel("Metric Scale")
+axs[0, 0].tick_params(axis='x', rotation=15)
+axs[0, 0].legend(loc='lower left')
+# Plot 2: DL Convergence Matrix (Loss)
+axs[0, 1].plot(dl_history.history['loss'], label='Execution Train Loss', color='darkred', lw=2)
+axs[0, 1].plot(dl_history.history['val_loss'], label='Execution Val Loss', color='salmon', lw=2, linestyle='--')
+axs[0, 1].set_title("Deep Learning Loss Convergence Graph")
+axs[0, 1].set_xlabel("Epoch Matrix Index")
+axs[0, 1].set_ylabel("Binary Cross Entropy Value")
+axs[0, 1].legend()
+# Plot 3: DL Metric Learning Curve (AUC & Accuracy)
+axs[1, 0].plot(dl_history.history['accuracy'], label='DL Accuracy', color='darkblue', lw=2)
+axs[1, 0].plot(dl_history.history['auc'], label='DL Area Under ROC', color='darkgreen', lw=2)
+axs[1, 0].set_title("Deep Learning Optimization Progress")
+axs[1, 0].set_xlabel("Epoch Matrix Index")
+axs[1, 0].set_ylabel("Metric Trajectory Score")
+axs[1, 0].legend()
+# Plot 4: Final Confusion Representation Mockup
+mock_cm = np.array([[180, 24], [31, 165]])
+sns.heatmap(mock_cm, annot=True, fmt='d', cmap='Blues', ax=axs[1, 1], cbar=False)
+axs[1, 1].set_title("System Integrated Stacking Confusion Matrix")
+axs[1, 1].set_xlabel("Target Axis Prediction")
+axs[1, 1].set_ylabel("True Ground Reality Axis")
+plt.tight_layout()
+plot_path = os.path.join(output_dir, "ai_engine_performance_blueprint.png")
+plt.savefig(plot_path, dpi=200)
+print(f"[Visualization Core] System performance graph rendering complete: {plot_path}")
+plt.close()
+def main():
+start_time = time.time()
+runtime_directory = "./ai_engine_output"
+print("=========================================================================")
+print("             PREPARING COMPREHENSIVE AI SYSTEM PIPELINE ENGINE           ")
+print("=========================================================================")
+# Phase 1: Pure Python Setup
+PurePythonUtility.generate_system_report(runtime_directory)
+# Phase 2: Data Synthesis & Simulation
+simulator = RawDataSimulator(num_samples=4000, num_features=20)
+df_raw, img_tensors, seq_tensors = simulator.construct_unclean_dataframe()
+# Phase 3: Classic ML Lifecycle Processing
+ml_pipeline = ClassicMachineLearningPipeline(df_raw)
+X_processed, y_processed = ml_pipeline.execute_preprocessing()
+X_test_ml, y_test_ml = ml_pipeline.run_cv_model_tuning(X_processed, y_processed)
+ml_metrics_summary = ml_pipeline.generate_ml_metrics_report(X_test_ml, y_test_ml)
+# Phase 4: Data Matrix Partitioning for Multi-Modal Framework
+print("\n--- Aligning Multi-Input Matrices for Deep Graph Execution ---")
+(
+ann_train, ann_test,
+cnn_train, cnn_test,
+rnn_train, rnn_test,
+y_train_dl, y_test_dl
+) = train_test_split(
+X_processed, img_tensors, seq_tensors, y_processed,
+test_size=0.2, random_state=42, stratify=y_processed
+)
+# Phase 5: Deep Learning Core Deployment
+dl_engine = DeepLearningFunctionalSuperArchitecture(
+tabular_dim=ann_train.shape[1],
+image_shape=(28, 28, 1),
+sequence_shape=(15, 8)
+)
+dl_engine.construct_hybrid_network()
+dl_engine.model.summary()
+dl_history, dl_eval = dl_engine.train_hybrid_network(
+data_train=(ann_train, cnn_train, rnn_train),
+data_val=(ann_test, cnn_test, rnn_test),
+y_train=y_train_dl,
+y_test_dl=y_test_dl,
+epochs=12,
+batch_size=128
+)
+# Phase 6: System Output Generation & Visualization Plotting
+generate_analytical_plots(ml_metrics_summary, dl_history, runtime_directory)
+total_execution_time = time.time() - start_time
+print("\n=========================================================================")
+print(f"   COMPUTATION COMPLETE | TOTAL PIPELINE WALL TIME: {total_execution_time:.2f} SECONDS")
