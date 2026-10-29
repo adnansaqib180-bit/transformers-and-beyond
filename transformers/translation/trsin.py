@@ -2,7 +2,9 @@ import pandas as pd
 from keras.layers import *
 import numpy as np
 import tensorflow as tf
-from keras import Sequential, Layer
+from keras import Sequential, Layer,Model
+import tiktoken
+from keras.preprocessing.sequence import pad_sequences
 class PositionalEncoding(Layer):
     def __init__(self, sequence_length, embed_dim, **kwargs):
         super().__init__(**kwargs)
@@ -56,8 +58,8 @@ class Encoder(Layer):
         x = self.norm1(attention_output + inputs)
         fnn_output  = self.fnn(x)
         fnn_output = self.dropout2(fnn_output,training=training)
-
-        return self.norm2(x+fnn_output)
+        result = self.norm2(x+fnn_output)
+        return result
 
 class Decoder(Layer):
     def __init__(self, vocabsize, sequence_length, embed_dim, ff_dim, num_heads, dropout=0.1):
@@ -86,7 +88,7 @@ class Decoder(Layer):
         self.dropout1 = Dropout(self.dropout)
         self.dropout2 = Dropout(self.dropout)
 
-    def call(self, inputs, training=False):
+    def call(self, inputs,encoder_input, training=False):
         inputs = self.embeddings(inputs)
         inputs = self.pos_encoding(inputs)
         
@@ -95,8 +97,8 @@ class Decoder(Layer):
         causal_mask = tf.cast(causal_mask, tf.bool)
         
         m_attention_output = self.masked_attention(
-            key=inputs,
-            query=inputs,
+            key=encoder_input,
+            query=encoder_input,
             value=inputs,
             attention_mask=causal_mask
         )
@@ -115,3 +117,48 @@ with open('transformers-and-beyond/transformers/translation/data.csv', 'r') as f
 
 print(df.head())
 
+encoder = tiktoken.get_encoding("cl100k_base")
+
+df['encoded_english'] = df['english'].apply(lambda x: encoder.encode(x))
+df['encoded_urdu'] = df['roman_hindi'].apply(lambda x: encoder.encode(x))
+
+max_length_english = max(df['encoded_english'].apply(len))
+max_length_urdu = max(df['encoded_urdu'].apply(len))
+
+PAD_ID = encoder.n_vocab
+BOS_ID = encoder.n_vocab + 1
+EOS_ID = encoder.encode('<|endoftext|>',allowed_special={'<|endoftext|>'})[0]
+
+vocab_size = encoder.n_vocab + 2  
+target_seq = [
+    [BOS_ID] + tokens + [EOS_ID] for tokens in df['encoded_urdu']
+]
+encoder_input = [
+    seq[:-1] for seq in df['encoded_english']
+]
+decoder_target = [
+    seq[1:] for seq in target_seq
+    
+]
+df['encoded_english'] = pad_sequences(encoder_input, maxlen=max_length_english, padding='post', truncating='post', value=PAD_ID).tolist()
+df['decoder_input'] = pad_sequences(target_seq, maxlen=max_length_urdu + 2, padding='post', truncating='post', value=PAD_ID).tolist()
+df['decoder_target'] = pad_sequences(decoder_target, maxlen=max_length_urdu + 2, padding='post', truncating='post', value=PAD_ID).tolist()
+print(df.head())
+encoder_input = np.array(df['encoded_english'])
+decoder_input = np.array(df['decoder_input'])
+decoder_target = np.array(df['decoder_target'])
+
+print(df.columns)
+df = df.drop(columns=['english', 'roman_hindi', 'encoded_urdu',])
+print(df.head())
+encoder_input = np.stack(df["encoded_english"].to_numpy())
+decoder_input = np.stack(df["decoder_input"].to_numpy())
+decoder_target = np.stack(df["decoder_target"].to_numpy())
+print(encoder_input.shape, decoder_input.shape, decoder_target.shape)
+
+inputs = Input(shape=(max_length_english,))
+x = Encoder(sequence_length=max_length_english, vocabsize=vocab_size, embed_dim=128, num_heads=4, ff_dim=512)(inputs)
+y = Decoder(vocabsize=vocab_size, sequence_length=max_length_urdu + 2, embed_dim=128, ff_dim=512, num_heads=4)(inputs=x, encoder_input=x)
+
+model = Model(inputs=inputs, outputs=y)
+print(model.summary())
