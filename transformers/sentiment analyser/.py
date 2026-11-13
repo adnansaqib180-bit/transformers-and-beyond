@@ -70,8 +70,6 @@ encoder = tiktoken.get_encoding("cl100k_base")
 data['encoded_tweet'] = data['text'].apply(lambda x: encoder.encode(x))
 
 max_length = max(data['encoded_tweet'].apply(len))
-padded_token_id = 0
-padded_tokens = [tokens + [padded_token_id] * (max_length - len(tokens)) for tokens in data['encoded_tweet']]
 data['padded_tweet'] = pad_sequences(data['encoded_tweet'], maxlen=max_length, padding='post', truncating='post').tolist()
 
 x_text = np.array(data['padded_tweet'].tolist())
