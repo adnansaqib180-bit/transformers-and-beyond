@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 client = ChatGroq(model= 'openai/gpt-oss-120b')
-template = PromptTemplate(
+template = PromptTemplate.from_template(
     template='''
 
     You are an expert communication assistant. Write an email based on the following details:
@@ -32,13 +32,13 @@ perpose = st.selectbox('select perpose', [
 tone = st.selectbox('selct tone ',[ 'Formal', 'Friendly', 'Urgent',  'Apologetic'])
 recipient = st.selectbox('selct Recipient',['Boss', 'Teacher', 'Client', 'Friend'])
 
-promt = template.invoke({
-    'name':name,
-    'recipient_name' : recipient_name,
-    'purpose':perpose,
-    'tone':tone,
-    'recipient':recipient
-})
+promt = template.format(
+    name = 'name',
+    recipient_name = 'recipient_name',
+    purpose='perpose',
+    tone='tone',
+    recipient='recipient'
+)
 output = client.invoke(promt)
 if st.button('generate'):
     st.write(output.content)

@@ -1,0 +1,4 @@
+Human: Hi, my name is Ali and I ordered a laptop yesterday.
+AI: Hello Ali! How can I help you with your laptop order today?
+Human: I want to check the delivery status of order 1234.
+AI: Your order 1234 has been shipped and will arrive tomorrow.
