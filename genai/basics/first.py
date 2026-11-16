@@ -1,44 +1,36 @@
-from openai import OpenAI
-import os
-import dotenv
-dotenv.load_dotenv()
+from langchain_groq import ChatGroq
+from langchain_core.prompts import PromptTemplate
+import streamlit as st 
 
-client = OpenAI(
-    base_url="https://api.groq.com/openai/v1",
-    api_key=os.getenv("GROCK"),
+client = ChatGroq(model= 'openai/gpt-oss-120b')
+template = PromptTemplate(
+    template='''
+
+    You are an expert communication assistant. Write an email based on the following details:
+    Purpose: {purpose}
+    Tone: {tone}
+    Recipient: {recipient}
+    
+    Keep it clear, concise, and ready to send. Do not add placeholders like [Your Name], just end with 'Best regards'.
+'''
 )
 
-def final_promt():
-    return '''please retrive the company name, address, 
-    phone number, email, and website from the following text if not present
-    then return "not present" in the respective field. for website if not 
-    present then you can use external sources still can't find then return "not present".
-    return the information in json fromat should be like this:
-    {
-    
-        "company_name": "company name",
-        "address": "address",
-        "phone_number": "phone number",
-        "email": "email",
-        "website": "website"
-    }
-    
-'''
+st.header('email generator ')
+perpose = st.selectbox('select perpose', [
+    "Leave Request",
+    "Job / Internship Application",
+    "Client / Teacher Follow-up",
+    "Apology / Delay Notice",
+    "Networking / Cold Outreach"
+])
+tone = st.selectbox('selct tone ',[ 'Formal', 'Friendly', 'Urgent',  'Apologetic'])
+recipient = st.selectbox('selct Recipient',['Boss', 'Teacher', 'Client', 'Friend'])
 
-def extract_information(text):
-    prompt = final_promt() + text
-    response = client.chat.completions.create(
-        model="openai/gpt-oss-120b",
-        messages=[
-            {"role": "user", "content": prompt}
-        ]
-    )
-    return response.choices[0].message.content
-
-while True:
-    user_input = input("Enter text to extract information (or type 'exit' to quit): ")
-    if user_input.lower() == "exit":
-        break
-
-    extracted_info = extract_information(user_input)
-    print("Extracted Information: " + extracted_info)
+promt = template.invoke({
+    'purpose':perpose,
+    'tone':tone,
+    'recipient':recipient
+})
+output = client.invoke(promt)
+if st.button('generate'):
+    st.write(output.content)
