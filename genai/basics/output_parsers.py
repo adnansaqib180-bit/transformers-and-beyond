@@ -1,6 +1,7 @@
 from langchain_groq import ChatGroq
 from langchain_core.output_parsers import StrOutputParser,JsonOutputParser,PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
+from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -47,5 +48,25 @@ print(chain.invoke({}))
 
 print()
 print('-=-=-=-=--0--=-=-=-=-=-=-=-=- with pydentic parser -=-=-=-=-=-=-=-=-=-=-=-=')
+class Person (BaseModel):
+    name : str = Field(description = 'name of the person')
+    age : int = Field(description = 'age of the person',ge=18)
+    city : str = Field (description = 'name of the city where the person lives ')
 
-parser = pydenticoutputparser
+parser = PydanticOutputParser(pydentic_object = Person)
+
+template3 = PromptTemplate(
+    template='genrate name age city of a fictional {place} \n {parser}',
+    input_variables=['place'],
+    partial_variables={'parser':parser.get_format_instructions()}
+    )
+
+print('\n -=-=-=-=-= without chain -=-=-=-=-=-=-=')
+promt = template3.invoke(input={'place':'pakistani'})
+print(model.invoke(promt).content)
+
+print('\n -=-=-=-=-=-=-= with chain -=-=-=-=-=-=-=-=')
+
+chain = template3 | model  | parser
+print(chain.invoke({'place':'pakistani'}))
+
